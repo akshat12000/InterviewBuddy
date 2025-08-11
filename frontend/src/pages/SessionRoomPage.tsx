@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { useParams, useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
 import io from 'socket.io-client'
 import Editor from '@monaco-editor/react'
@@ -7,6 +7,7 @@ import axios from 'axios'
 
 export default function SessionRoomPage() {
   const { roomId } = useParams()
+  const navigate = useNavigate()
   const { user } = useAuth()
   const socketRef = useRef<ReturnType<typeof io> | null>(null)
   const [code, setCode] = useState('')
@@ -28,6 +29,7 @@ export default function SessionRoomPage() {
   const [callStarted, setCallStarted] = useState(false)
   const [micOn, setMicOn] = useState(true)
   const [camOn, setCamOn] = useState(true)
+  const [mediaError, setMediaError] = useState<string>('')
 
   const rtcConfig: RTCConfiguration = {
     iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
@@ -40,7 +42,13 @@ export default function SessionRoomPage() {
   const [language, setLanguage] = useState<'javascript'|'typescript'|'python'|'cpp'|'java'>('javascript')
   const [running, setRunning] = useState(false)
   const [runOutput, setRunOutput] = useState<string>('')
-  const editingDisabled = status === 'completed'
+  const editingDisabled = status !== 'live'
+  const [chat, setChat] = useState<Array<{from:string;fromName?:string;text:string;at:number}>>([])
+  const [chatInput, setChatInput] = useState('')
+  const [allProblems, setAllProblems] = useState<any[]>([])
+  const chatBoxRef = useRef<HTMLDivElement | null>(null)
+  const [userNames, setUserNames] = useState<Record<string, string>>({})
+  const [isSessionInterviewer, setIsSessionInterviewer] = useState<boolean>(false)
 
   useEffect(() => {
     if (!roomId || !user) return
@@ -69,6 +77,19 @@ export default function SessionRoomPage() {
         try { await pcRef.current?.addIceCandidate(new RTCIceCandidate(data.candidate)) } catch {}
       }
     })
+    s.on('chat:message', (msg) => {
+      setChat(prev => [...prev, msg])
+    })
+    s.on('problem:select', async ({ problemId }) => {
+      try {
+        const { data } = await axios.get(`/api/problems/${problemId}`)
+        setProblem(data.item)
+      } catch {}
+    })
+    s.on('call:end', () => {
+      cleanupCall()
+      navigate('/')
+    })
     return () => {
       s.emit('session:leave', { roomId })
       s.disconnect()
@@ -93,21 +114,48 @@ export default function SessionRoomPage() {
         setSessionId(s._id)
         setProblem(s.problem)
         setStatus(s.status)
+  // Determine if current user is the assigned interviewer for this session
+  const interviewerId = (s.interviewer && (s.interviewer._id || s.interviewer.id)) || s.interviewer
+  setIsSessionInterviewer(Boolean(user?.id && interviewerId && user.id === interviewerId))
+  // Build a map of user id -> name for chat display
+  const map: Record<string, string> = {}
+  const interviewer = s.interviewer || {}
+  const candidate = s.candidate || {}
+  const iid = interviewer._id || interviewer.id || interviewer
+  const cid = candidate._id || candidate.id || candidate
+  if (iid && interviewer.name) map[iid] = interviewer.name
+  if (cid && candidate.name) map[cid] = candidate.name
+  if (user?.id && user.name) map[user.id] = user.name
+  setUserNames(map)
         const lastSnap = (s.codeSnapshots || []).slice(-1)[0]
         if (lastSnap?.code) setCode(lastSnap.code)
         if (lastSnap?.language) setLanguage(lastSnap.language)
+  // load problems for potential change (interviewer only view)
+  const probs = await axios.get('/api/problems')
+  setAllProblems(probs.data.items || [])
       } catch {}
     })()
   }, [roomId])
 
   async function ensureLocalMedia() {
     if (localStreamRef.current) return
-    const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true })
-    localStreamRef.current = stream
-    if (localVideoRef.current) {
-      localVideoRef.current.srcObject = stream
-      localVideoRef.current.muted = true
-      await localVideoRef.current.play().catch(()=>{})
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+      localStreamRef.current = stream
+      if (localVideoRef.current) {
+        localVideoRef.current.muted = true
+        localVideoRef.current.srcObject = stream
+  await localVideoRef.current.play().catch(()=>{ /* autoplay might require gesture */ })
+      }
+      setMediaError('')
+    } catch (err: any) {
+      const name = err?.name || ''
+      let msg = err?.message || String(err)
+      if (name === 'NotReadableError') msg = 'Device in use by another app. Close apps like Teams/Zoom/OBS/Camera and retry.'
+      if (name === 'NotAllowedError') msg = 'Permission denied. Allow access in the browser address bar and retry.'
+      if (name === 'NotFoundError') msg = 'No camera/mic found. Plug in a device or choose a different one.'
+      setMediaError('Camera/Mic error: ' + msg)
+      throw err
     }
   }
 
@@ -122,7 +170,7 @@ export default function SessionRoomPage() {
       const [remoteStream] = ev.streams
       if (remoteVideoRef.current && remoteStream) {
         remoteVideoRef.current.srcObject = remoteStream
-        remoteVideoRef.current.play().catch(()=>{})
+  remoteVideoRef.current.play().catch(()=>{ /* user gesture may be required */ })
       }
     }
     // ICE candidate handler
@@ -217,8 +265,13 @@ export default function SessionRoomPage() {
   async function endInterview() {
     if (!sessionId) return
     try {
-      await axios.patch(`/api/sessions/${sessionId}/status`, { status: 'completed' })
-      setStatus('completed')
+  const ok = window.confirm('End interview and leave the room?')
+  if (!ok) return
+  await axios.patch(`/api/sessions/${sessionId}/status`, { status: 'completed' })
+  setStatus('completed')
+  socketRef.current?.emit('call:end', { roomId })
+  cleanupCall()
+  navigate('/')
     } catch {}
   }
 
@@ -263,9 +316,48 @@ export default function SessionRoomPage() {
     worker.postMessage(code)
   }
 
+  async function sendChat() {
+    if (!chatInput.trim() || !roomId) return
+    socketRef.current?.emit('chat:message', { roomId, text: chatInput.trim() })
+    setChatInput('')
+  }
+
+  // Auto-scroll chat to bottom on new messages
+  useEffect(() => {
+    if (chatBoxRef.current) {
+      chatBoxRef.current.scrollTop = chatBoxRef.current.scrollHeight
+    }
+  }, [chat])
+
+  // Simplified: no device selection UI; default devices used
+
+  async function changeProblem(pid: string) {
+    if (!sessionId || !pid) return
+    try {
+      await axios.patch(`/api/sessions/${sessionId}/problem`, { problem: pid })
+      // sync to room
+      socketRef.current?.emit('problem:select', { roomId, problemId: pid })
+      const { data } = await axios.get(`/api/problems/${pid}`)
+      setProblem(data.item)
+    } catch {}
+  }
+
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '320px 1fr 360px', height: 'calc(100vh - 60px)' }}>
-      <div style={{ borderRight: '1px solid #ddd', overflowY: 'auto' }}>
+    <div style={{ display: 'grid', gridTemplateRows: '48px 1fr', height: '100vh' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderBottom: '1px solid #222', background: '#141414' }}>
+        <div style={{ fontWeight: 600 }}>Interview Room</div>
+        <div style={{ marginLeft: 'auto' }}>
+          <button onClick={() => {
+            const ok = window.confirm('Exit interview? This will end the call and leave the room.')
+            if (!ok) return
+            socketRef.current?.emit('call:end', { roomId })
+            cleanupCall()
+            navigate('/')
+          }}>Exit</button>
+        </div>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '320px 1fr 360px', height: '100%' }}>
+        <div style={{ borderRight: '1px solid #ddd', overflowY: 'auto' }}>
         <h3 style={{ margin: 8 }}>Participants</h3>
         <ul>
           {participants.map((p,i) => (<li key={i}>{p.uid} ({p.role}) {p.socketId===socketId?'(me)':''}</li>))}
@@ -281,11 +373,43 @@ export default function SessionRoomPage() {
             <div>Select problem in dashboard to sync...</div>
           )}
         </div>
-        {user?.role === 'interviewer' && (
+        {/* Chat moved here so both roles can see it easily */}
+        <div style={{ padding: 8, borderTop: '1px solid #ddd' }}>
+          <h3>Chat</h3>
+          <div ref={chatBoxRef} style={{ maxHeight: 220, overflowY: 'auto', display: 'grid', gap: 4, padding: 6, border: '1px solid #444', background: '#111', color: '#eee' }}>
+            {chat.map((m, i) => {
+              const isMe = m.from === (user?.id || '')
+              const name = isMe ? 'Me' : (m.fromName || userNames[m.from] || m.from)
+              return <div key={i} style={{ color: '#eee' }}><b>{name}</b>: {m.text}</div>
+            })}
+            {!chat.length && <div style={{ color: '#aaa' }}>No messages yet</div>}
+          </div>
+          <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+            <input value={chatInput} onChange={(e)=>setChatInput(e.target.value)} placeholder="Type a message" style={{ flex: 1, background: '#1a1a1a', color: '#fff', border: '1px solid #444', padding: '6px 8px' }} onKeyDown={(e)=>{ if (e.key==='Enter') sendChat() }} />
+            <button onClick={sendChat} style={{ background: '#333', color: '#fff', border: '1px solid #444', padding: '6px 10px' }}>Send</button>
+          </div>
+        </div>
+        {isSessionInterviewer && (
           <div style={{ padding: 8, display: 'grid', gap: 8 }}>
-            <button onClick={startInterview} disabled={status==='live'}>Start Interview</button>
-            <button onClick={endInterview} disabled={status!=='live'}>End Interview</button>
-            <div>Status: <b>{status}</b></div>
+            <button title="Sets the session status to Live and enables editor" onClick={startInterview} disabled={status==='live'}>Start Interview</button>
+            <button title="Completes session, ends call for both, and returns to dashboard" onClick={endInterview} disabled={status!=='live'}>End Interview</button>
+            <div>Status: <b>{status}</b> {status!=='live' && <span style={{ color: '#888' }}>(editor disabled)</span>}</div>
+            {!!allProblems.length && (
+              <div>
+                <label>Change Problem</label>
+                <select onChange={(e)=>changeProblem(e.target.value)} defaultValue="">
+                  <option value="" disabled>Select a problem</option>
+                  {allProblems.map(p => (
+                    <option key={p._id} value={p._id}>{p.title} · {p.difficulty}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+          </div>
+        )}
+        {!isSessionInterviewer && (
+          <div style={{ padding: 8, display: 'grid', gap: 8 }}>
+            <div>Status: <b>{status}</b> {status!=='live' && <span style={{ color: '#888' }}>(editor disabled)</span>}</div>
           </div>
         )}
       </div>
@@ -295,11 +419,18 @@ export default function SessionRoomPage() {
           <video ref={remoteVideoRef} style={{ width: '100%', height: '100%', background: '#000', borderRadius: 6, objectFit: 'cover' }} playsInline />
         </div>
         <div style={{ display: 'flex', gap: 8, padding: '0 8px 8px', alignItems: 'center' }}>
+          <button onClick={() => { ensureLocalMedia().catch(()=>{}); }}>Test Camera</button>
           <button onClick={() => {
             const other = participants.find(p => p.socketId !== socketId)
             if (other) startCall(other.socketId)
           }} disabled={callStarted}>Start Call</button>
-          <button onClick={cleanupCall} disabled={!callStarted}>End Call</button>
+          <button onClick={() => {
+            const ok = window.confirm('End call and leave the room?')
+            if (!ok) return
+            socketRef.current?.emit('call:end', { roomId })
+            cleanupCall()
+            navigate('/')
+          }} disabled={!callStarted}>End Call</button>
           <button onClick={toggleMic} disabled={!callStarted}>{micOn? 'Mute' : 'Unmute'}</button>
           <button onClick={toggleCam} disabled={!callStarted}>{camOn? 'Camera Off' : 'Camera On'}</button>
           <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
@@ -314,6 +445,9 @@ export default function SessionRoomPage() {
             <button onClick={runCode} disabled={running || editingDisabled}>{running?'Running...':'Run'}</button>
           </div>
         </div>
+        {mediaError && (
+          <div style={{ color: '#f66', padding: '0 8px 8px' }}>{mediaError}</div>
+        )}
         <div style={{ minHeight: 0 /* allow editor to fill remaining space */ }}>
           <Editor height="100%" language={language} value={code} onChange={onEdit} options={{ readOnly: editingDisabled }} />
         </div>
@@ -321,8 +455,8 @@ export default function SessionRoomPage() {
           <div style={{ fontWeight: 600, marginBottom: 6 }}>Output</div>
           <pre style={{ margin: 0, whiteSpace: 'pre-wrap' }}>{runOutput || 'Run code to see output here.'}</pre>
         </div>
-      </div>
-      <div style={{ borderLeft: '1px solid #ddd', padding: 8, overflowY: 'auto' }}>
+  </div>
+  <div style={{ borderLeft: '1px solid #ddd', padding: 8, overflowY: 'auto', display: 'grid', gridTemplateRows: '1fr auto', gap: 8 }}>
         <h3>Interviewer Score Sheet</h3>
         {user?.role === 'interviewer' ? (
           <div style={{ display: 'grid', gap: 8 }}>
@@ -348,6 +482,7 @@ export default function SessionRoomPage() {
         ) : (
           <div>Only interviewer can see the score sheet.</div>
         )}
+        </div>
       </div>
     </div>
   )

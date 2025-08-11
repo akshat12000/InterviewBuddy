@@ -1,5 +1,6 @@
 const { z } = require('zod');
 const Session = require('../models/Session');
+const mongoose = require('mongoose');
 
 const createSchema = z.object({
   interviewer: z.string(),
@@ -27,10 +28,34 @@ exports.createSession = async (req, res, next) => {
 
 exports.getSession = async (req, res, next) => {
   try {
-  const id = req.params.id;
-  const s = (await Session.findById(id).populate('interviewer candidate problem')) ||
-        (await Session.findOne({ roomId: id }).populate('interviewer candidate problem'));
+    const id = req.params.id;
+    let s = null;
+    if (mongoose.isValidObjectId(id)) {
+      s = await Session.findById(id).populate('interviewer candidate problem');
+    }
+    if (!s) {
+      s = await Session.findOne({ roomId: id }).populate('interviewer candidate problem');
+    }
     if (!s) return res.status(404).json({ message: 'Not found' });
+    res.json({ item: s });
+  } catch (e) {
+    next(e);
+  }
+};
+
+// Set or change the problem for a session (interviewer only)
+const setProblemSchema = z.object({ problem: z.string() });
+exports.setProblem = async (req, res, next) => {
+  try {
+    const { problem } = setProblemSchema.parse(req.body);
+    const s0 = await Session.findById(req.params.id);
+    if (!s0) return res.status(404).json({ message: 'Not found' });
+    if (s0.interviewer?.toString() !== req.user.uid) return res.status(403).json({ message: 'Forbidden' });
+    const s = await Session.findByIdAndUpdate(
+      req.params.id,
+      { problem },
+      { new: true }
+    ).populate('interviewer candidate problem');
     res.json({ item: s });
   } catch (e) {
     next(e);

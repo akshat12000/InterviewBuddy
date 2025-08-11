@@ -1,6 +1,6 @@
 import './App.css'
 import type { JSX } from 'react'
-import { BrowserRouter, Routes, Route, Navigate, Link } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate, Link, useLocation } from 'react-router-dom'
 import { AuthProvider, useAuth } from './auth/AuthContext'
 import LoginPage from './pages/LoginPage'
 import DashboardPage from './pages/DashboardPage'
@@ -32,16 +32,27 @@ function NavBar() {
 }
 
 export default function App() {
+  function Layout({ children }: { children: JSX.Element }) {
+    const location = useLocation()
+    const hideNav = location.pathname.startsWith('/room/')
+    return (
+      <>
+        {!hideNav && <NavBar />}
+        {children}
+      </>
+    )
+  }
   return (
     <AuthProvider>
       <BrowserRouter>
-        <NavBar />
-        <Routes>
-          <Route path="/" element={<div style={{ padding: 24 }}>Welcome to InterviewApp MVP</div>} />
-          <Route path="/login" element={<LoginPage />} />
-          <Route path="/dashboard" element={<ProtectedRoute><DashboardPage /></ProtectedRoute>} />
-          <Route path="/room/:roomId" element={<ProtectedRoute><SessionRoomPage /></ProtectedRoute>} />
-        </Routes>
+        <Layout>
+          <Routes>
+            <Route path="/" element={<div style={{ padding: 24 }}>Welcome to InterviewApp MVP</div>} />
+            <Route path="/login" element={<LoginPage />} />
+            <Route path="/dashboard" element={<ProtectedRoute><DashboardPage /></ProtectedRoute>} />
+            <Route path="/room/:roomId" element={<ProtectedRoute><SessionRoomPage /></ProtectedRoute>} />
+          </Routes>
+        </Layout>
       </BrowserRouter>
     </AuthProvider>
   )

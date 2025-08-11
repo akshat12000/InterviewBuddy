@@ -1,15 +1,22 @@
 const { v4: uuidv4 } = require('uuid');
+const User = require('../models/User');
 
 const liveRooms = new Map(); // roomId -> { participants: Set<socketId>, users: Map<socketId, {uid, role}> }
 
 function registerSessionHandlers(io, socket) {
-  const joinRoom = (roomId) => {
+  const joinRoom = async (roomId) => {
     if (!liveRooms.has(roomId)) {
       liveRooms.set(roomId, { participants: new Set(), users: new Map() });
     }
     const room = liveRooms.get(roomId);
     room.participants.add(socket.id);
-    room.users.set(socket.id, { uid: socket.user.uid, role: socket.user.role });
+    // Fetch display name once per join
+    let name = 'User';
+    try {
+      const u = await User.findById(socket.user.uid).select('name');
+      if (u?.name) name = u.name;
+    } catch {}
+    room.users.set(socket.id, { uid: socket.user.uid, role: socket.user.role, name });
     socket.join(roomId);
 
   const list = Array.from(room.users.entries()).map(([sid, val]) => ({ socketId: sid, ...val }))
@@ -17,8 +24,8 @@ function registerSessionHandlers(io, socket) {
   socket.emit('socket:me', { socketId: socket.id })
   };
 
-  socket.on('session:join', ({ roomId }) => {
-    joinRoom(roomId);
+  socket.on('session:join', async ({ roomId }) => {
+    await joinRoom(roomId);
   });
 
   socket.on('session:leave', ({ roomId }) => {
@@ -49,6 +56,23 @@ function registerSessionHandlers(io, socket) {
   // Problem state sync
   socket.on('problem:select', ({ roomId, problemId }) => {
     socket.to(roomId).emit('problem:select', { problemId });
+  });
+
+  // Simple chat relay
+  socket.on('chat:message', ({ roomId, text }) => {
+    const from = socket.user?.uid || 'unknown'
+    let fromName = 'User'
+    try {
+      const room = liveRooms.get(roomId)
+      const info = room?.users?.get(socket.id)
+      if (info?.name) fromName = info.name
+    } catch {}
+    io.to(roomId).emit('chat:message', { from, fromName, text, at: Date.now() })
+  });
+
+  // End call sync across room
+  socket.on('call:end', ({ roomId }) => {
+    socket.to(roomId).emit('call:end');
   });
 
   socket.on('disconnecting', () => {
