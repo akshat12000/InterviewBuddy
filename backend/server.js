@@ -18,12 +18,13 @@ const app = express();
 const server = http.createServer(app);
 
 const PORT = process.env.PORT || 4000;
-const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
+const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173,http://localhost:5174';
+const ORIGINS = CLIENT_ORIGIN.split(',').map((s) => s.trim());
 
 // Socket.IO setup
 const io = new Server(server, {
 	cors: {
-		origin: CLIENT_ORIGIN,
+		origin: ORIGINS,
 		credentials: true,
 	},
 });
@@ -34,7 +35,14 @@ io.on('connection', (socket) => {
 });
 
 // Middlewares
-app.use(cors({ origin: CLIENT_ORIGIN, credentials: true }));
+app.use(cors({
+	origin: function (origin, callback) {
+		if (!origin) return callback(null, true);
+		if (ORIGINS.includes(origin)) return callback(null, true);
+		return callback(new Error('Not allowed by CORS'));
+	},
+	credentials: true,
+}));
 app.use(express.json({ limit: '1mb' }));
 app.use(cookieParser());
 

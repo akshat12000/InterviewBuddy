@@ -25,20 +25,22 @@ export default function LoginPage() {
   }
 
   return (
-    <div style={{ padding: 24, maxWidth: 360 }}>
-      <h2>Login</h2>
-      <form onSubmit={onSubmit}>
-        <div>
-          <label>Email</label>
-          <input value={email} onChange={e=>setEmail(e.target.value)} type="email" required />
-        </div>
-        <div>
-          <label>Password</label>
-          <input value={password} onChange={e=>setPassword(e.target.value)} type="password" required />
-        </div>
-        {error && <div style={{ color: 'red' }}>{error}</div>}
-        <button type="submit" disabled={loading}>{loading?'Logging in...':'Login'}</button>
-      </form>
+    <div className="mx-auto grid max-w-sm gap-4 px-4 py-10">
+      <h2 className="text-center text-2xl font-semibold">Sign in</h2>
+      <div className="card p-5">
+        <form onSubmit={onSubmit} className="grid gap-4">
+          <div className="grid gap-1">
+            <label className="text-sm text-neutral-400">Email</label>
+            <input className="input" value={email} onChange={e=>setEmail(e.target.value)} type="email" required />
+          </div>
+          <div className="grid gap-1">
+            <label className="text-sm text-neutral-400">Password</label>
+            <input className="input" value={password} onChange={e=>setPassword(e.target.value)} type="password" required />
+          </div>
+          {error && <div className="text-sm text-red-400">{error}</div>}
+          <button className="btn btn-primary" type="submit" disabled={loading}>{loading?'Logging in...':'Login'}</button>
+        </form>
+      </div>
     </div>
   )
 }

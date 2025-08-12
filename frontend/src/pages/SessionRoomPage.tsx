@@ -4,6 +4,7 @@ import { useAuth } from '../auth/AuthContext'
 import io from 'socket.io-client'
 import Editor from '@monaco-editor/react'
 import axios from 'axios'
+import { Camera, CameraOff, Mic, MicOff, Play, LogOut } from 'lucide-react'
 
 export default function SessionRoomPage() {
   const { roomId } = useParams()
@@ -11,7 +12,7 @@ export default function SessionRoomPage() {
   const { user } = useAuth()
   const socketRef = useRef<ReturnType<typeof io> | null>(null)
   const [code, setCode] = useState('')
-  const [participants, setParticipants] = useState<{socketId:string; uid:string; role:string}[]>([])
+  const [participants, setParticipants] = useState<{socketId:string; uid:string; role:string; name?:string}[]>([])
   const [socketId, setSocketId] = useState('')
   const [scores, setScores] = useState<Array<{criterion:string; score:number; notes?:string}>>([
     { criterion: 'Problem Solving', score: 0 },
@@ -26,9 +27,12 @@ export default function SessionRoomPage() {
   const localVideoRef = useRef<HTMLVideoElement | null>(null)
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null)
   const localStreamRef = useRef<MediaStream | null>(null)
+  const remoteStreamRef = useRef<MediaStream | null>(null)
   const [callStarted, setCallStarted] = useState(false)
   const [micOn, setMicOn] = useState(true)
   const [camOn, setCamOn] = useState(true)
+  const [remoteMicOn, setRemoteMicOn] = useState<boolean | null>(null)
+  const [remoteCamOn, setRemoteCamOn] = useState<boolean | null>(null)
   const [mediaError, setMediaError] = useState<string>('')
 
   const rtcConfig: RTCConfiguration = {
@@ -39,7 +43,7 @@ export default function SessionRoomPage() {
   const [sessionId, setSessionId] = useState<string>('')
   const [problem, setProblem] = useState<any>(null)
   const [status, setStatus] = useState<'scheduled'|'live'|'completed'|'cancelled'>('scheduled')
-  const [language, setLanguage] = useState<'javascript'|'typescript'|'python'|'cpp'|'java'>('javascript')
+  const [language, setLanguage] = useState<string>('javascript')
   const [running, setRunning] = useState(false)
   const [runOutput, setRunOutput] = useState<string>('')
   const editingDisabled = status !== 'live'
@@ -49,6 +53,47 @@ export default function SessionRoomPage() {
   const chatBoxRef = useRef<HTMLDivElement | null>(null)
   const [userNames, setUserNames] = useState<Record<string, string>>({})
   const [isSessionInterviewer, setIsSessionInterviewer] = useState<boolean>(false)
+  const [focusEditor, setFocusEditor] = useState<boolean>(false)
+  const languageOptions: Array<{id:string; label:string}> = [
+    { id: 'javascript', label: 'JavaScript' },
+    { id: 'typescript', label: 'TypeScript' },
+    { id: 'python', label: 'Python' },
+    { id: 'cpp', label: 'C/C++' },
+    { id: 'java', label: 'Java' },
+    { id: 'csharp', label: 'C#' },
+    { id: 'go', label: 'Go' },
+    { id: 'rust', label: 'Rust' },
+    { id: 'php', label: 'PHP' },
+    { id: 'ruby', label: 'Ruby' },
+    { id: 'kotlin', label: 'Kotlin' },
+    { id: 'swift', label: 'Swift' },
+    { id: 'scala', label: 'Scala' },
+    { id: 'sql', label: 'SQL' },
+    { id: 'json', label: 'JSON' },
+    { id: 'markdown', label: 'Markdown' },
+    { id: 'html', label: 'HTML' },
+    { id: 'css', label: 'CSS' },
+    { id: 'shell', label: 'Shell' },
+    { id: 'xml', label: 'XML' },
+    { id: 'yaml', label: 'YAML' },
+  ]
+  const userInitials = (() => {
+    const src = (user?.name || user?.email || '').trim()
+    if (!src) return 'U'
+    const parts = src.split(/\s+/)
+    const first = parts[0]?.[0] || ''
+    const last = parts.length > 1 ? parts[parts.length-1]?.[0] : ''
+    return (first + last).toUpperCase() || first.toUpperCase() || 'U'
+  })()
+  const remoteInitials = (() => {
+    const other = participants.find(p => p.socketId !== socketId)
+    const name = (other?.name || (other?.uid ? userNames[other.uid] : '') || '').trim()
+    if (!name) return '?'
+    const parts = name.split(/\s+/)
+    const first = parts[0]?.[0] || ''
+    const last = parts.length > 1 ? parts[parts.length-1]?.[0] : ''
+    return (first + last).toUpperCase() || first.toUpperCase() || '?'
+  })()
 
   useEffect(() => {
     if (!roomId || !user) return
@@ -62,19 +107,31 @@ export default function SessionRoomPage() {
   s.on('socket:me', ({ socketId }) => setSocketId(socketId))
     s.on('code:update', ({ code }) => setCode(code))
     s.on('webrtc:signal', async ({ from, data }) => {
-      if (!pcRef.current && (data?.type === 'offer' || data?.type === 'answer' || data?.candidate)) {
+      // Create peer only when receiving an offer or ICE candidate (not for answers)
+      if (!pcRef.current && (data?.type === 'offer' || data?.candidate)) {
         await ensureLocalMedia()
         createPeer(from)
       }
-      if (data?.type === 'offer') {
-        await pcRef.current!.setRemoteDescription(new RTCSessionDescription(data))
-        const answer = await pcRef.current!.createAnswer()
-        await pcRef.current!.setLocalDescription(answer)
-        socketRef.current?.emit('webrtc:signal', { roomId, to: from, data: pcRef.current!.localDescription })
-      } else if (data?.type === 'answer') {
-        await pcRef.current?.setRemoteDescription(new RTCSessionDescription(data))
-      } else if (data?.candidate) {
-        try { await pcRef.current?.addIceCandidate(new RTCIceCandidate(data.candidate)) } catch {}
+      const pc = pcRef.current
+      if (!pc) return
+      try {
+        if (data?.type === 'offer') {
+          // Only accept offers when stable (no ongoing negotiation)
+          if (pc.signalingState !== 'stable') return
+          await pc.setRemoteDescription(new RTCSessionDescription(data))
+          const answer = await pc.createAnswer()
+          await pc.setLocalDescription(answer)
+          socketRef.current?.emit('webrtc:signal', { roomId, to: from, data: pc.localDescription })
+        } else if (data?.type === 'answer') {
+          // Only apply answer if we have a local offer and no remote description yet
+          if (pc.signalingState !== 'have-local-offer') return
+          if (pc.currentRemoteDescription) return
+          await pc.setRemoteDescription(new RTCSessionDescription(data))
+        } else if (data?.candidate) {
+          try { await pc.addIceCandidate(new RTCIceCandidate(data.candidate)) } catch {}
+        }
+      } catch (err) {
+        // swallow to avoid noisy logs in UI; can add debug console if needed
       }
     })
     s.on('chat:message', (msg) => {
@@ -90,6 +147,11 @@ export default function SessionRoomPage() {
       cleanupCall()
       navigate('/')
     })
+  s.on('media:state', ({ micOn, camOn }) => {
+      // update remote media state
+      setRemoteMicOn(typeof micOn === 'boolean' ? micOn : null)
+      setRemoteCamOn(typeof camOn === 'boolean' ? camOn : null)
+    })
     return () => {
       s.emit('session:leave', { roomId })
       s.disconnect()
@@ -100,9 +162,13 @@ export default function SessionRoomPage() {
   // When participants list updates, detect the other peer and auto-initiate if interviewer
   useEffect(() => {
     const other = participants.find(p => p.socketId !== socketId)
-    const shouldInitiate = user?.role === 'interviewer' && other && !callStarted
+    const shouldInitiate = user?.role === 'interviewer' && other && !callStarted && !pcRef.current
     if (shouldInitiate) { startCall(other.socketId!) }
-  }, [participants, socketId])
+    // Broadcast our current media state so new peer reflects correct UI
+    if (socketRef.current && roomId) {
+      socketRef.current.emit('media:state', { roomId, micOn, camOn })
+    }
+  }, [participants, socketId, callStarted])
 
   // Fetch session & problem
   useEffect(() => {
@@ -168,10 +234,14 @@ export default function SessionRoomPage() {
     // Remote track handler
     pc.ontrack = (ev) => {
       const [remoteStream] = ev.streams
+      if (remoteStream) {
+        remoteStreamRef.current = remoteStream
+      }
       if (remoteVideoRef.current && remoteStream) {
         remoteVideoRef.current.srcObject = remoteStream
-  remoteVideoRef.current.play().catch(()=>{ /* user gesture may be required */ })
+        remoteVideoRef.current.play().catch(()=>{ /* user gesture may be required */ })
       }
+      setCallStarted(true)
     }
     // ICE candidate handler
     pc.onicecandidate = (ev) => {
@@ -179,17 +249,43 @@ export default function SessionRoomPage() {
         socketRef.current?.emit('webrtc:signal', { roomId, to: targetId, data: { candidate: ev.candidate } })
       }
     }
+    // Avoid spurious renegotiation
+    pc.onnegotiationneeded = async () => {
+      if (pc.signalingState !== 'stable') return
+    }
     return pc
   }
 
+  // Rebind media streams to video tags when layout switches (focus toggled)
+  useEffect(() => {
+    // local
+    if (localStreamRef.current && localVideoRef.current) {
+      localVideoRef.current.muted = true
+      const cur = localVideoRef.current as HTMLVideoElement
+      if (cur.srcObject !== localStreamRef.current) {
+        cur.srcObject = localStreamRef.current
+      }
+      cur.play?.().catch(()=>{})
+    }
+    // remote
+    if (remoteStreamRef.current && remoteVideoRef.current) {
+      const cur = remoteVideoRef.current as HTMLVideoElement
+      if (cur.srcObject !== remoteStreamRef.current) {
+        cur.srcObject = remoteStreamRef.current
+      }
+      cur.play?.().catch(()=>{})
+    }
+  }, [focusEditor])
+
   async function startCall(targetId: string) {
     try {
-      await ensureLocalMedia()
-      const pc = createPeer(targetId)
-      const offer = await pc.createOffer()
-      await pc.setLocalDescription(offer)
-      socketRef.current?.emit('webrtc:signal', { roomId, to: targetId, data: pc.localDescription })
-      setCallStarted(true)
+  if (pcRef.current && callStarted) return
+  await ensureLocalMedia()
+  const pc = createPeer(targetId)
+  const offer = await pc.createOffer()
+  await pc.setLocalDescription(offer)
+  socketRef.current?.emit('webrtc:signal', { roomId, to: targetId, data: pc.localDescription })
+  setCallStarted(true)
     } catch (e) {
       // ignore
     }
@@ -208,16 +304,26 @@ export default function SessionRoomPage() {
     setCamOn(true)
   }
 
-  function toggleMic() {
+  async function toggleMic() {
+    if (!localStreamRef.current) {
+      try { await ensureLocalMedia() } catch { return }
+    }
     const enabled = !micOn
     setMicOn(enabled)
     localStreamRef.current?.getAudioTracks().forEach(t => t.enabled = enabled)
+    // broadcast state
+    socketRef.current?.emit('media:state', { roomId, micOn: enabled, camOn })
   }
 
-  function toggleCam() {
+  async function toggleCam() {
+    if (!localStreamRef.current) {
+      try { await ensureLocalMedia() } catch { return }
+    }
     const enabled = !camOn
     setCamOn(enabled)
     localStreamRef.current?.getVideoTracks().forEach(t => t.enabled = enabled)
+    // broadcast state
+    socketRef.current?.emit('media:state', { roomId, micOn, camOn: enabled })
   }
 
   const onEdit = (value?: string) => {
@@ -343,145 +449,251 @@ export default function SessionRoomPage() {
   }
 
   return (
-    <div style={{ display: 'grid', gridTemplateRows: '48px 1fr', height: '100vh' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderBottom: '1px solid #222', background: '#141414' }}>
-        <div style={{ fontWeight: 600 }}>Interview Room</div>
-        <div style={{ marginLeft: 'auto' }}>
-          <button onClick={() => {
+  <div className="grid h-dvh grid-rows-[48px_1fr] overflow-hidden">
+      <div className="flex items-center gap-2 border-b border-neutral-800 bg-neutral-950 px-3">
+        <div className="text-sm font-semibold">Interview Room</div>
+        <div className="ml-auto">
+          <button className="btn" onClick={() => {
             const ok = window.confirm('Exit interview? This will end the call and leave the room.')
             if (!ok) return
             socketRef.current?.emit('call:end', { roomId })
             cleanupCall()
             navigate('/')
-          }}>Exit</button>
+          }}>
+            <LogOut size={16}/> Exit
+          </button>
         </div>
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: '320px 1fr 360px', height: '100%' }}>
-        <div style={{ borderRight: '1px solid #ddd', overflowY: 'auto' }}>
-        <h3 style={{ margin: 8 }}>Participants</h3>
-        <ul>
-          {participants.map((p,i) => (<li key={i}>{p.uid} ({p.role}) {p.socketId===socketId?'(me)':''}</li>))}
-        </ul>
-        <h3 style={{ margin: 8 }}>Problem</h3>
-        <div style={{ padding: 8 }}>
-          {problem ? (
-            <div>
-              <div style={{ fontWeight: 600 }}>{problem.title} <span style={{ color: '#888', fontWeight: 400 }}>· {problem.difficulty}</span></div>
-              <p style={{ whiteSpace: 'pre-wrap' }}>{problem.statement}</p>
+  <div className="grid h-full min-h-0 grid-cols-[320px_minmax(0,1fr)_360px]">
+        {/* Left Sidebar */}
+  <div className="border-r border-neutral-800 h-full overflow-y-auto">
+          <div className="p-3">
+      <h3 className="mb-2 text-sm font-semibold text-neutral-300">Participants</h3>
+            <ul className="space-y-1 text-sm text-neutral-300">
+              {participants.map((p,i) => {
+                const displayName = (p.name && p.name.trim()) || userNames[p.uid] || 'User'
+                return (
+                  <li key={i} className="flex items-center justify-between rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1">
+                    <span className="truncate">{displayName}</span>
+                    {p.socketId===socketId && <span className="text-xs text-brand-400">me</span>}
+                  </li>
+                )
+              })}
+            </ul>
+          </div>
+          <div className="p-3">
+            <h3 className="mb-2 text-sm font-semibold text-neutral-300">Problem</h3>
+            <div className="card p-3">
+              {problem ? (
+                <div>
+                  <div className="font-semibold">{problem.title} <span className="font-normal text-neutral-400">· {problem.difficulty}</span></div>
+                  <p className="mt-2 whitespace-pre-wrap text-sm text-neutral-300">{problem.statement}</p>
+                </div>
+              ) : (
+                <div className="text-sm text-neutral-400">Select a problem in the dashboard to sync...</div>
+              )}
+            </div>
+          </div>
+          {/* Chat */}
+          <div className="border-t border-neutral-800 p-3">
+            <h3 className="mb-2 text-sm font-semibold text-neutral-300">Chat</h3>
+            <div ref={chatBoxRef} className="card grid max-h-60 gap-1 overflow-y-auto p-2 text-sm text-neutral-200">
+              {chat.map((m, i) => {
+                const isMe = m.from === (user?.id || '')
+                const name = isMe ? 'Me' : (m.fromName || userNames[m.from] || m.from)
+                return <div key={i}><b>{name}</b>: {m.text}</div>
+              })}
+              {!chat.length && <div className="text-neutral-500">No messages yet</div>}
+            </div>
+            <div className="mt-2 flex gap-2">
+              <input className="input" value={chatInput} onChange={(e)=>setChatInput(e.target.value)} placeholder="Type a message" onKeyDown={(e)=>{ if (e.key==='Enter') sendChat() }} />
+              <button className="btn" onClick={sendChat}>Send</button>
+            </div>
+          </div>
+          {isSessionInterviewer ? (
+            <div className="p-3">
+              <div className="grid gap-2">
+                <button className="btn btn-primary" title="Sets the session status to Live and enables editor" onClick={startInterview} disabled={status==='live'}>Start Interview</button>
+                <button className="btn" title="Completes session, ends call for both, and returns to dashboard" onClick={endInterview} disabled={status!=='live'}>End Interview</button>
+                <div className="text-sm">Status: <b>{status}</b> {status!=='live' && <span className="text-neutral-500">(editor disabled)</span>}</div>
+                {!!allProblems.length && (
+                  <div className="grid gap-1">
+                    <label className="text-sm text-neutral-400">Change Problem</label>
+                    <select className="select" onChange={(e)=>changeProblem(e.target.value)} defaultValue="">
+                      <option value="" disabled>Select a problem</option>
+                      {allProblems.map(p => (
+                        <option key={p._id} value={p._id}>{p.title} · {p.difficulty}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+              </div>
             </div>
           ) : (
-            <div>Select problem in dashboard to sync...</div>
+            <div className="p-3 text-sm">Status: <b>{status}</b> {status!=='live' && <span className="text-neutral-500">(editor disabled)</span>}</div>
           )}
-        </div>
-        {/* Chat moved here so both roles can see it easily */}
-        <div style={{ padding: 8, borderTop: '1px solid #ddd' }}>
-          <h3>Chat</h3>
-          <div ref={chatBoxRef} style={{ maxHeight: 220, overflowY: 'auto', display: 'grid', gap: 4, padding: 6, border: '1px solid #444', background: '#111', color: '#eee' }}>
-            {chat.map((m, i) => {
-              const isMe = m.from === (user?.id || '')
-              const name = isMe ? 'Me' : (m.fromName || userNames[m.from] || m.from)
-              return <div key={i} style={{ color: '#eee' }}><b>{name}</b>: {m.text}</div>
-            })}
-            {!chat.length && <div style={{ color: '#aaa' }}>No messages yet</div>}
-          </div>
-          <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
-            <input value={chatInput} onChange={(e)=>setChatInput(e.target.value)} placeholder="Type a message" style={{ flex: 1, background: '#1a1a1a', color: '#fff', border: '1px solid #444', padding: '6px 8px' }} onKeyDown={(e)=>{ if (e.key==='Enter') sendChat() }} />
-            <button onClick={sendChat} style={{ background: '#333', color: '#fff', border: '1px solid #444', padding: '6px 10px' }}>Send</button>
-          </div>
-        </div>
-        {isSessionInterviewer && (
-          <div style={{ padding: 8, display: 'grid', gap: 8 }}>
-            <button title="Sets the session status to Live and enables editor" onClick={startInterview} disabled={status==='live'}>Start Interview</button>
-            <button title="Completes session, ends call for both, and returns to dashboard" onClick={endInterview} disabled={status!=='live'}>End Interview</button>
-            <div>Status: <b>{status}</b> {status!=='live' && <span style={{ color: '#888' }}>(editor disabled)</span>}</div>
-            {!!allProblems.length && (
-              <div>
-                <label>Change Problem</label>
-                <select onChange={(e)=>changeProblem(e.target.value)} defaultValue="">
-                  <option value="" disabled>Select a problem</option>
-                  {allProblems.map(p => (
-                    <option key={p._id} value={p._id}>{p.title} · {p.difficulty}</option>
-                  ))}
-                </select>
+  </div>
+
+        {/* Center */}
+        {focusEditor ? (
+          <div className="grid min-w-0 h-full min-h-0 grid-cols-2 gap-2 p-2">
+            <div className="grid min-h-0 grid-rows-[1fr_auto_auto] gap-2">
+              <div className="grid min-h-0 grid-rows-2 gap-2">
+                <div className="relative h-full w-full">
+                  <video ref={localVideoRef} className={`h-full w-full rounded-md bg-black object-cover transition-opacity ${camOn ? 'opacity-100' : 'opacity-0'}`} playsInline muted />
+                  {!camOn && (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center rounded-md bg-neutral-800 text-neutral-200">
+                      <div className="flex h-20 w-20 items-center justify-center rounded-full bg-neutral-700 text-2xl font-semibold">{userInitials}</div>
+                      <div className="mt-2 flex items-center gap-1 text-sm"><CameraOff size={16}/> Camera is off</div>
+                    </div>
+                  )}
+                  {!micOn && (
+                    <div className="absolute left-2 top-2 inline-flex items-center gap-1 rounded-md bg-neutral-900/80 px-2 py-1 text-xs text-neutral-100">
+                      <MicOff size={14}/> Muted
+                    </div>
+                  )}
+                </div>
+                <div className="relative h-full w-full">
+                  <video ref={remoteVideoRef} className={`h-full w-full rounded-md bg-black object-cover transition-opacity ${remoteCamOn === false ? 'opacity-0' : 'opacity-100'}`} playsInline />
+                  {remoteCamOn === false && (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center rounded-md bg-neutral-800 text-neutral-200">
+                      <div className="flex h-20 w-20 items-center justify-center rounded-full bg-neutral-700 text-2xl font-semibold">{remoteInitials}</div>
+                      <div className="mt-2 flex items-center gap-1 text-sm"><CameraOff size={16}/> Camera is off</div>
+                    </div>
+                  )}
+                  {remoteMicOn === false && (
+                    <div className="absolute left-2 top-2 inline-flex items-center gap-1 rounded-md bg-neutral-900/80 px-2 py-1 text-xs text-neutral-100">
+                      <MicOff size={14}/> Muted
+                    </div>
+                  )}
+                </div>
               </div>
+              <div className="flex items-center gap-2 rounded-md border border-neutral-800 bg-neutral-950/80 px-2 py-2">
+                <button className="btn" onClick={()=>setFocusEditor(false)}>Exit Focus</button>
+                <button className="btn" onClick={toggleMic} disabled={!callStarted}>{micOn? (<><Mic size={16}/> Mute</>) : (<><MicOff size={16}/> Unmute</> )}</button>
+                <button className="btn" onClick={toggleCam} disabled={!callStarted}>{camOn? (<><Camera size={16}/> Camera Off</>) : (<><CameraOff size={16}/> Camera On</>)}</button>
+              </div>
+              <div className="card p-3">
+                <h3 className="mb-2 text-sm font-semibold text-neutral-300">Problem</h3>
+                {problem ? (
+                  <div>
+                    <div className="font-semibold">{problem.title} <span className="font-normal text-neutral-400">· {problem.difficulty}</span></div>
+                    <p className="mt-2 whitespace-pre-wrap text-sm text-neutral-300">{problem.statement}</p>
+                  </div>
+                ) : (
+                  <div className="text-sm text-neutral-400">No problem selected.</div>
+                )}
+              </div>
+            </div>
+            <div className="grid grid-rows-[auto_1fr_auto] gap-2 min-h-0">
+              <div className="flex items-center gap-2">
+                <label className="text-sm text-neutral-400">Language</label>
+                <select className="select" value={language} onChange={(e)=>setLanguage(e.target.value as any)} disabled={editingDisabled}>
+                  {languageOptions.map(opt => (<option key={opt.id} value={opt.id}>{opt.label}</option>))}
+                </select>
+                <button className="btn" onClick={runCode} disabled={running || editingDisabled}><Play size={16}/> {running?'Running...':'Run'}</button>
+              </div>
+              <div className="min-h-0">
+                <Editor height="100%" language={language} value={code} onChange={onEdit} options={{ readOnly: editingDisabled }} />
+              </div>
+              <div className="overflow-auto rounded-md border border-neutral-800 bg-neutral-950 p-2">
+                <div className="mb-1 font-semibold">Output</div>
+                <pre className="m-0 whitespace-pre-wrap text-sm text-neutral-200">{runOutput || 'Run code to see output here.'}</pre>
+              </div>
+            </div>
+    </div>
+  ) : (
+    <div className="grid min-w-0 h-full min-h-0 grid-rows-[240px_auto_1fr_180px]">
+            <div className="grid grid-cols-2 gap-2 p-2">
+              <div className="relative h-full w-full">
+                <video ref={localVideoRef} className={`h-full w-full rounded-md bg-black object-cover transition-opacity ${camOn ? 'opacity-100' : 'opacity-0'}`} playsInline muted />
+                {!camOn && (
+                  <div className="absolute inset-0 flex flex-col items-center justify-center rounded-md bg-neutral-800 text-neutral-200">
+                    <div className="flex h-20 w-20 items-center justify-center rounded-full bg-neutral-700 text-2xl font-semibold">{userInitials}</div>
+                    <div className="mt-2 flex items-center gap-1 text-sm"><CameraOff size={16}/> Camera is off</div>
+                  </div>
+                )}
+                {!micOn && (
+                  <div className="absolute left-2 top-2 inline-flex items-center gap-1 rounded-md bg-neutral-900/80 px-2 py-1 text-xs text-neutral-100">
+                    <MicOff size={14}/> Muted
+                  </div>
+                )}
+              </div>
+              <div className="relative h-full w-full">
+                <video ref={remoteVideoRef} className={`h-full w-full rounded-md bg-black object-cover transition-opacity ${remoteCamOn === false ? 'opacity-0' : 'opacity-100'}`} playsInline />
+                {remoteCamOn === false && (
+                  <div className="absolute inset-0 flex flex-col items-center justify-center rounded-md bg-neutral-800 text-neutral-200">
+                    <div className="flex h-20 w-20 items-center justify-center rounded-full bg-neutral-700 text-2xl font-semibold">{remoteInitials}</div>
+                    <div className="mt-2 flex items-center gap-1 text-sm"><CameraOff size={16}/> Camera is off</div>
+                  </div>
+                )}
+                {remoteMicOn === false && (
+                  <div className="absolute left-2 top-2 inline-flex items-center gap-1 rounded-md bg-neutral-900/80 px-2 py-1 text-xs text-neutral-100">
+                    <MicOff size={14}/> Muted
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="relative z-30 flex items-center gap-2 border-t border-neutral-800 bg-neutral-950/80 px-2 py-2">
+              <button className="btn" onClick={()=>setFocusEditor(true)}>Focus Editor</button>
+              <button className="btn" onClick={toggleMic} disabled={!callStarted}>{micOn? (<><Mic size={16}/> Mute</>) : (<><MicOff size={16}/> Unmute</> )}</button>
+              <button className="btn" onClick={toggleCam} disabled={!callStarted}>{camOn? (<><Camera size={16}/> Camera Off</>) : (<><CameraOff size={16}/> Camera On</>)}</button>
+              <div className="ml-auto flex items-center gap-2">
+                <label className="text-sm text-neutral-400">Language</label>
+                <select className="select" value={language} onChange={(e)=>setLanguage(e.target.value as any)} disabled={editingDisabled}>
+                  {languageOptions.map(opt => (<option key={opt.id} value={opt.id}>{opt.label}</option>))}
+                </select>
+                <button className="btn" onClick={runCode} disabled={running || editingDisabled}><Play size={16}/> {running?'Running...':'Run'}</button>
+              </div>
+            </div>
+            {mediaError && (
+              <div className="px-2 pb-2 text-sm text-red-400">{mediaError}</div>
+            )}
+            <div className="min-h-0">
+              <Editor height="100%" language={language} value={code} onChange={onEdit} options={{ readOnly: editingDisabled }} />
+            </div>
+            <div className="overflow-auto border-t border-neutral-800 bg-neutral-950 p-2">
+              <div className="mb-1 font-semibold">Output</div>
+              <pre className="m-0 whitespace-pre-wrap text-sm text-neutral-200">{runOutput || 'Run code to see output here.'}</pre>
+            </div>
+    </div>
+  )}
+
+        {/* Right Sidebar */}
+        <div className="grid h-full grid-rows-[1fr_auto] gap-2 overflow-y-auto border-l border-neutral-800 p-3">
+          <div>
+            <h3 className="mb-2 text-sm font-semibold">Interviewer Score Sheet</h3>
+            {user?.role === 'interviewer' ? (
+              <div className="grid gap-3">
+                {scores.map((s, idx) => (
+                  <div key={idx} className="grid gap-1">
+                    <label className="text-sm text-neutral-300">{s.criterion}</label>
+                    <input className="w-full" type="range" min={0} max={10} value={s.score} onChange={(e)=>{
+                      const next=[...scores]; next[idx] = { ...s, score: Number(e.target.value) }; setScores(next)
+                    }} />
+                    <textarea className="textarea" placeholder="Notes" value={s.notes||''} onChange={(e)=>{
+                      const next=[...scores]; next[idx] = { ...s, notes: e.target.value }; setScores(next)
+                    }} />
+                  </div>
+                ))}
+                <div className="grid gap-1">
+                  <label className="text-sm text-neutral-300">Decision</label>
+                  <select className="select" value={decision} onChange={(e)=>setDecision(e.target.value as any)}>
+                    <option value="selected">Selected</option>
+                    <option value="rejected">Rejected</option>
+                    <option value="on-hold">On Hold</option>
+                  </select>
+                </div>
+              </div>
+            ) : (
+              <div className="text-sm text-neutral-400">Only interviewer can see the score sheet.</div>
             )}
           </div>
-        )}
-        {!isSessionInterviewer && (
-          <div style={{ padding: 8, display: 'grid', gap: 8 }}>
-            <div>Status: <b>{status}</b> {status!=='live' && <span style={{ color: '#888' }}>(editor disabled)</span>}</div>
-          </div>
-        )}
-      </div>
-      <div style={{ display: 'grid', gridTemplateRows: '240px auto 1fr 180px', height: '100%' }}>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, padding: 8, alignItems: 'start' }}>
-          <video ref={localVideoRef} style={{ width: '100%', height: '100%', background: '#000', borderRadius: 6, objectFit: 'cover' }} playsInline muted />
-          <video ref={remoteVideoRef} style={{ width: '100%', height: '100%', background: '#000', borderRadius: 6, objectFit: 'cover' }} playsInline />
-        </div>
-        <div style={{ display: 'flex', gap: 8, padding: '0 8px 8px', alignItems: 'center' }}>
-          <button onClick={() => { ensureLocalMedia().catch(()=>{}); }}>Test Camera</button>
-          <button onClick={() => {
-            const other = participants.find(p => p.socketId !== socketId)
-            if (other) startCall(other.socketId)
-          }} disabled={callStarted}>Start Call</button>
-          <button onClick={() => {
-            const ok = window.confirm('End call and leave the room?')
-            if (!ok) return
-            socketRef.current?.emit('call:end', { roomId })
-            cleanupCall()
-            navigate('/')
-          }} disabled={!callStarted}>End Call</button>
-          <button onClick={toggleMic} disabled={!callStarted}>{micOn? 'Mute' : 'Unmute'}</button>
-          <button onClick={toggleCam} disabled={!callStarted}>{camOn? 'Camera Off' : 'Camera On'}</button>
-          <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
-            <label>Language</label>
-            <select value={language} onChange={(e)=>setLanguage(e.target.value as any)} disabled={editingDisabled}>
-              <option value="javascript">JavaScript</option>
-              <option value="typescript">TypeScript</option>
-              <option value="python">Python</option>
-              <option value="cpp">C++</option>
-              <option value="java">Java</option>
-            </select>
-            <button onClick={runCode} disabled={running || editingDisabled}>{running?'Running...':'Run'}</button>
-          </div>
-        </div>
-        {mediaError && (
-          <div style={{ color: '#f66', padding: '0 8px 8px' }}>{mediaError}</div>
-        )}
-        <div style={{ minHeight: 0 /* allow editor to fill remaining space */ }}>
-          <Editor height="100%" language={language} value={code} onChange={onEdit} options={{ readOnly: editingDisabled }} />
-        </div>
-        <div style={{ borderTop: '1px solid #222', padding: 8, background: '#0b0b0b', overflow: 'auto' }}>
-          <div style={{ fontWeight: 600, marginBottom: 6 }}>Output</div>
-          <pre style={{ margin: 0, whiteSpace: 'pre-wrap' }}>{runOutput || 'Run code to see output here.'}</pre>
-        </div>
-  </div>
-  <div style={{ borderLeft: '1px solid #ddd', padding: 8, overflowY: 'auto', display: 'grid', gridTemplateRows: '1fr auto', gap: 8 }}>
-        <h3>Interviewer Score Sheet</h3>
-        {user?.role === 'interviewer' ? (
-          <div style={{ display: 'grid', gap: 8 }}>
-            {scores.map((s, idx) => (
-              <div key={idx} style={{ display: 'grid', gap: 4 }}>
-                <label>{s.criterion}</label>
-                <input type="range" min={0} max={10} value={s.score} onChange={(e)=>{
-                  const next=[...scores]; next[idx] = { ...s, score: Number(e.target.value) }; setScores(next)
-                }} />
-                <textarea placeholder="Notes" value={s.notes||''} onChange={(e)=>{
-                  const next=[...scores]; next[idx] = { ...s, notes: e.target.value }; setScores(next)
-                }} />
-              </div>
-            ))}
-            <label>Decision</label>
-            <select value={decision} onChange={(e)=>setDecision(e.target.value as any)}>
-              <option value="selected">Selected</option>
-              <option value="rejected">Rejected</option>
-              <option value="on-hold">On Hold</option>
-            </select>
-            <button onClick={submitScores} disabled={submitting}>{submitting?'Submitting...':'Submit Scores'}</button>
-          </div>
-        ) : (
-          <div>Only interviewer can see the score sheet.</div>
-        )}
+          {user?.role === 'interviewer' && (
+            <div>
+              <button className="btn btn-primary w-full" onClick={submitScores} disabled={submitting}>{submitting?'Submitting...':'Submit Scores'}</button>
+            </div>
+          )}
         </div>
       </div>
     </div>

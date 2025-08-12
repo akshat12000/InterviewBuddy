@@ -41,41 +41,48 @@ export default function DashboardPage() {
   }
 
   return (
-    <div style={{ padding: 24, display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 24 }}>
-      <div>
-        <h2>Dashboard</h2>
-        <div style={{ margin: '12px 0', padding: 12, background: '#fafafa', border: '1px solid #eee' }}>
-          <div><b>{user?.name}</b> ({user?.role})</div>
-          <div style={{ color: '#666' }}>{user?.email}</div>
+    <div className="mx-auto grid max-w-7xl grid-cols-1 gap-6 px-4 py-8 md:grid-cols-3">
+      <div className="md:col-span-1">
+        <h2 className="mb-3 text-2xl font-semibold">Dashboard</h2>
+        <div className="card p-4">
+          <div className="text-lg font-medium">{user?.name} <span className="text-sm font-normal text-neutral-400">({user?.role})</span></div>
+          <div className="text-sm text-neutral-400">{user?.email}</div>
         </div>
         {user?.role === 'interviewer' && (
-          <div style={{ border: '1px solid #eee', padding: 12, borderRadius: 6 }}>
-            <h3>Create Session</h3>
-            <div style={{ display: 'grid', gap: 8 }}>
-              <label>Candidate email</label>
-              <input value={candEmail} onChange={(e)=>setCandEmail(e.target.value)} placeholder="candidate@example.com" />
-              <label>Problem</label>
-              <select value={selectedProblem} onChange={(e)=>setSelectedProblem(e.target.value)}>
+          <div className="card mt-4 p-4">
+            <h3 className="mb-3 text-lg font-semibold">Create Session</h3>
+            <div className="grid gap-3">
+              <label className="text-sm text-neutral-400">Candidate email</label>
+              <input className="input" value={candEmail} onChange={(e)=>setCandEmail(e.target.value)} placeholder="candidate@example.com" />
+              <label className="text-sm text-neutral-400">Problem</label>
+              <select className="select" value={selectedProblem} onChange={(e)=>setSelectedProblem(e.target.value)}>
                 <option value="">Select problem</option>
                 {problems?.items?.map((p: any) => (
                   <option key={p._id} value={p._id}>{p.title} - {p.difficulty}</option>
                 ))}
               </select>
-              {error && <div style={{ color: 'red' }}>{error}</div>}
-              <button onClick={createSession} disabled={creating}>{creating?'Creating...':'Create & Join'}</button>
+              {error && <div className="text-sm text-red-400">{error}</div>}
+              <button className="btn btn-primary" onClick={createSession} disabled={creating}>{creating?'Creating...':'Create & Join'}</button>
             </div>
           </div>
         )}
       </div>
-      <div>
-        <h3>My Sessions</h3>
-        <ul>
+      <div className="md:col-span-2">
+        <h3 className="mb-3 text-lg font-semibold">My Sessions</h3>
+        <div className="grid gap-3">
           {sessions?.items?.map((s: any) => (
-            <li key={s._id} style={{ marginBottom: 6 }}>
-              <b>{s.problem?.title}</b> — {s.status} — <Link to={`/room/${s.roomId || s._id}`}>Join</Link>
-            </li>
+            <div key={s._id} className="card flex items-center justify-between p-4">
+              <div>
+                <div className="font-medium">{s.problem?.title}</div>
+                <div className="text-sm text-neutral-400">{s.status}</div>
+              </div>
+              <Link to={`/room/${s.roomId || s._id}`} className="btn">Join</Link>
+            </div>
           ))}
-        </ul>
+          {!sessions?.items?.length && (
+            <div className="text-sm text-neutral-400">No sessions yet.</div>
+          )}
+        </div>
       </div>
     </div>
   )

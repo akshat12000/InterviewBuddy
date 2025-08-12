@@ -75,6 +75,13 @@ function registerSessionHandlers(io, socket) {
     socket.to(roomId).emit('call:end');
   });
 
+  // Media state sync (mic/cam on/off)
+  socket.on('media:state', ({ roomId, micOn, camOn }) => {
+    try {
+      socket.to(roomId).emit('media:state', { from: socket.id, micOn, camOn })
+    } catch {}
+  });
+
   socket.on('disconnecting', () => {
     for (const roomId of socket.rooms) {
       if (roomId === socket.id) continue;
