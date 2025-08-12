@@ -4,6 +4,8 @@ const http = require('http');
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
 const mongoose = require('mongoose');
+const path = require('path');
+const fs = require('fs');
 const { Server } = require('socket.io');
 
 const authRoutes = require('./src/routes/auth.routes');
@@ -18,13 +20,36 @@ const app = express();
 const server = http.createServer(app);
 
 const PORT = process.env.PORT || 4000;
-const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173,http://localhost:5174';
-const ORIGINS = CLIENT_ORIGIN.split(',').map((s) => s.trim());
+const ALLOW_ALL_ORIGINS = process.env.ALLOW_ALL_ORIGINS === 'true';
+const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173,http://localhost:5174,http://localhost:4000,http://127.0.0.1:5173,http://127.0.0.1:5174,http://127.0.0.1:4000';
+const ORIGINS = new Set(CLIENT_ORIGIN.split(',').map((s) => s.trim()).filter(Boolean));
+// Auto-allow Render external URL if present (helps single-URL deploys)
+if (process.env.RENDER_EXTERNAL_URL) {
+	try {
+		const u = new URL(process.env.RENDER_EXTERNAL_URL);
+		ORIGINS.add(`${u.protocol}//${u.host}`);
+	} catch {}
+}
+
+function isAllowedOrigin(origin) {
+	if (ALLOW_ALL_ORIGINS) return true;
+	if (!origin) return true; // same-origin/no CORS
+	if (ORIGINS.has(origin)) return true;
+	try {
+		const u = new URL(origin);
+		const isLocalhost = u.hostname === 'localhost' || u.hostname === '127.0.0.1';
+		if (isLocalhost && (u.protocol === 'http:' || u.protocol === 'https:')) return true;
+	} catch {}
+	return false;
+}
 
 // Socket.IO setup
 const io = new Server(server, {
 	cors: {
-		origin: ORIGINS,
+		origin(origin, callback) {
+			if (isAllowedOrigin(origin)) return callback(null, true);
+			return callback(new Error('Not allowed by CORS'), false);
+		},
 		credentials: true,
 	},
 });
@@ -36,9 +61,8 @@ io.on('connection', (socket) => {
 
 // Middlewares
 app.use(cors({
-	origin: function (origin, callback) {
-		if (!origin) return callback(null, true);
-		if (ORIGINS.includes(origin)) return callback(null, true);
+	origin(origin, callback) {
+		if (isAllowedOrigin(origin)) return callback(null, true);
 		return callback(new Error('Not allowed by CORS'));
 	},
 	credentials: true,
@@ -56,6 +80,16 @@ app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/sessions', sessionRoutes);
 app.use('/api/problems', problemRoutes);
+
+// Serve frontend (static) if built
+const distPath = path.join(__dirname, '..', 'frontend', 'dist');
+if (fs.existsSync(distPath)) {
+	app.use(express.static(distPath));
+	// SPA fallback for non-API, non-health, non-socket paths (Express v5 compatible)
+	app.get(/^\/(?!api|health|socket\.io).*/, (req, res) => {
+		res.sendFile(path.join(distPath, 'index.html'));
+	});
+}
 
 // Error handler
 // eslint-disable-next-line no-unused-vars
