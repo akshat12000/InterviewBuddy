@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useAuth } from '../auth/AuthContext'
 import { Navigate } from 'react-router-dom'
+import { Eye, EyeOff } from 'lucide-react'
 
 export default function LoginPage() {
   const { user, login } = useAuth()
@@ -8,6 +9,7 @@ export default function LoginPage() {
   const [password, setPassword] = useState('password')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
 
   if (user) return <Navigate to="/dashboard" replace />
 
@@ -35,7 +37,24 @@ export default function LoginPage() {
           </div>
           <div className="grid gap-1">
             <label className="text-sm text-neutral-400">Password</label>
-            <input className="input" value={password} onChange={e=>setPassword(e.target.value)} type="password" required />
+            <div className="relative">
+              <input
+                className="input pr-10"
+                value={password}
+                onChange={e=>setPassword(e.target.value)}
+                type={showPassword ? 'text' : 'password'}
+                required
+                autoComplete="current-password"
+              />
+              <button
+                type="button"
+                aria-label={showPassword ? 'Hide password' : 'Show password'}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-neutral-200"
+                onClick={() => setShowPassword(v => !v)}
+              >
+                {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+              </button>
+            </div>
           </div>
           {error && <div className="text-sm text-red-400">{error}</div>}
           <button className="btn btn-primary" type="submit" disabled={loading}>{loading?'Logging in...':'Login'}</button>

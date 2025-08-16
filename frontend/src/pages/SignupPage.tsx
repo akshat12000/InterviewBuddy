@@ -2,6 +2,7 @@ import { useState } from 'react'
 import axios from 'axios'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
+import { Eye, EyeOff } from 'lucide-react'
 
 export default function SignupPage() {
   const { login } = useAuth()
@@ -12,6 +13,7 @@ export default function SignupPage() {
   const [role, setRole] = useState<'candidate'|'interviewer'>('candidate')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -44,7 +46,25 @@ export default function SignupPage() {
           </div>
           <div className="grid gap-1">
             <label className="text-sm text-neutral-400">Password</label>
-            <input className="input" type="password" value={password} onChange={e=>setPassword(e.target.value)} required minLength={6} />
+            <div className="relative">
+              <input
+                className="input pr-10"
+                type={showPassword ? 'text' : 'password'}
+                value={password}
+                onChange={e=>setPassword(e.target.value)}
+                required
+                minLength={6}
+                autoComplete="new-password"
+              />
+              <button
+                type="button"
+                aria-label={showPassword ? 'Hide password' : 'Show password'}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-neutral-200"
+                onClick={() => setShowPassword(v => !v)}
+              >
+                {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+              </button>
+            </div>
           </div>
           <div className="grid gap-1">
             <label className="text-sm text-neutral-400">I am a</label>

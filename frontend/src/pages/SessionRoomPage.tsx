@@ -35,9 +35,17 @@ export default function SessionRoomPage() {
   const [remoteCamOn, setRemoteCamOn] = useState<boolean | null>(null)
   const [mediaError, setMediaError] = useState<string>('')
 
-  const rtcConfig: RTCConfiguration = {
-    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-  }
+  // WebRTC config with optional TURN (set via Vite env: VITE_TURN_URL, VITE_TURN_USERNAME, VITE_TURN_CREDENTIAL)
+  const rtcConfig: RTCConfiguration = (() => {
+    const turnUrl = import.meta.env.VITE_TURN_URL as string | undefined
+    const turnUser = import.meta.env.VITE_TURN_USERNAME as string | undefined
+    const turnCred = import.meta.env.VITE_TURN_CREDENTIAL as string | undefined
+    const servers: RTCIceServer[] = [{ urls: 'stun:stun.l.google.com:19302' }]
+    if (turnUrl && turnUser && turnCred) {
+      servers.push({ urls: turnUrl.split(',').map(s=>s.trim()).filter(Boolean), username: turnUser, credential: turnCred })
+    }
+    return { iceServers: servers, iceCandidatePoolSize: 4 }
+  })()
 
   // Problem + editor enhancements
   const [sessionId, setSessionId] = useState<string>('')
@@ -52,7 +60,7 @@ export default function SessionRoomPage() {
   const [allProblems, setAllProblems] = useState<any[]>([])
   const chatBoxRef = useRef<HTMLDivElement | null>(null)
   const [userNames, setUserNames] = useState<Record<string, string>>({})
-  const [isSessionInterviewer, setIsSessionInterviewer] = useState<boolean>(false)
+  // removed: isSessionInterviewer (show controls to any interviewer)
   const [focusEditor, setFocusEditor] = useState<boolean>(false)
   const languageOptions: Array<{id:string; label:string}> = [
     { id: 'javascript', label: 'JavaScript' },
@@ -106,6 +114,8 @@ export default function SessionRoomPage() {
   s.on('room:participants', (list) => setParticipants(list))
   s.on('socket:me', ({ socketId }) => setSocketId(socketId))
     s.on('code:update', ({ code }) => setCode(code))
+    // Buffer ICE candidates until remote description is set to avoid addIceCandidate errors in some browsers
+    const pendingCandidates: any[] = []
     s.on('webrtc:signal', async ({ from, data }) => {
       // Create peer only when receiving an offer or ICE candidate (not for answers)
       if (!pcRef.current && (data?.type === 'offer' || data?.candidate)) {
@@ -122,13 +132,22 @@ export default function SessionRoomPage() {
           const answer = await pc.createAnswer()
           await pc.setLocalDescription(answer)
           socketRef.current?.emit('webrtc:signal', { roomId, to: from, data: pc.localDescription })
+          // flush pending candidates
+          while (pendingCandidates.length) {
+            const c = pendingCandidates.shift()
+            try { await pc.addIceCandidate(new RTCIceCandidate(c.candidate)) } catch {}
+          }
         } else if (data?.type === 'answer') {
           // Only apply answer if we have a local offer and no remote description yet
           if (pc.signalingState !== 'have-local-offer') return
           if (pc.currentRemoteDescription) return
           await pc.setRemoteDescription(new RTCSessionDescription(data))
         } else if (data?.candidate) {
-          try { await pc.addIceCandidate(new RTCIceCandidate(data.candidate)) } catch {}
+          if (!pc.currentRemoteDescription) {
+            pendingCandidates.push(data)
+          } else {
+            try { await pc.addIceCandidate(new RTCIceCandidate(data.candidate)) } catch {}
+          }
         }
       } catch (err) {
         // swallow to avoid noisy logs in UI; can add debug console if needed
@@ -143,9 +162,9 @@ export default function SessionRoomPage() {
         setProblem(data.item)
       } catch {}
     })
-    s.on('call:end', () => {
-      cleanupCall()
-      navigate('/')
+      s.on('call:end', () => {
+        cleanupCall()
+        navigate('/dashboard')
     })
   s.on('media:state', ({ micOn, camOn }) => {
       // update remote media state
@@ -180,9 +199,7 @@ export default function SessionRoomPage() {
         setSessionId(s._id)
         setProblem(s.problem)
         setStatus(s.status)
-  // Determine if current user is the assigned interviewer for this session
-  const interviewerId = (s.interviewer && (s.interviewer._id || s.interviewer.id)) || s.interviewer
-  setIsSessionInterviewer(Boolean(user?.id && interviewerId && user.id === interviewerId))
+  // Note: controls are visible to any user with interviewer role
   // Build a map of user id -> name for chat display
   const map: Record<string, string> = {}
   const interviewer = s.interviewer || {}
@@ -249,9 +266,12 @@ export default function SessionRoomPage() {
         socketRef.current?.emit('webrtc:signal', { roomId, to: targetId, data: { candidate: ev.candidate } })
       }
     }
-    // Avoid spurious renegotiation
-    pc.onnegotiationneeded = async () => {
-      if (pc.signalingState !== 'stable') return
+    // ICE connection monitoring and restart for cross-browser stability
+    pc.oniceconnectionstatechange = async () => {
+      const state = pc.iceConnectionState
+      if (state === 'disconnected' || state === 'failed') {
+        try { await pc.restartIce?.() } catch {}
+      }
     }
     return pc
   }
@@ -368,7 +388,7 @@ export default function SessionRoomPage() {
     } catch {}
   }
 
-  async function endInterview() {
+    async function endInterview() {
     if (!sessionId) return
     try {
   const ok = window.confirm('End interview and leave the room?')
@@ -377,7 +397,7 @@ export default function SessionRoomPage() {
   setStatus('completed')
   socketRef.current?.emit('call:end', { roomId })
   cleanupCall()
-  navigate('/')
+        navigate('/dashboard')
     } catch {}
   }
 
@@ -458,15 +478,15 @@ export default function SessionRoomPage() {
             if (!ok) return
             socketRef.current?.emit('call:end', { roomId })
             cleanupCall()
-            navigate('/')
+            navigate('/dashboard')
           }}>
             <LogOut size={16}/> Exit
           </button>
         </div>
       </div>
-  <div className="grid h-full min-h-0 grid-cols-[320px_minmax(0,1fr)_360px]">
+  <div className="grid h-full min-h-0 grid-cols-1 md:grid-cols-[320px_minmax(0,1fr)_360px]">
         {/* Left Sidebar */}
-  <div className="border-r border-neutral-800 h-full overflow-y-auto">
+  <div className="order-2 md:order-1 border-b md:border-b-0 md:border-r border-neutral-800 h-full overflow-y-auto">
           <div className="p-3">
       <h3 className="mb-2 text-sm font-semibold text-neutral-300">Participants</h3>
             <ul className="space-y-1 text-sm text-neutral-300">
@@ -510,7 +530,7 @@ export default function SessionRoomPage() {
               <button className="btn" onClick={sendChat}>Send</button>
             </div>
           </div>
-          {isSessionInterviewer ? (
+          {user?.role === 'interviewer' ? (
             <div className="p-3">
               <div className="grid gap-2">
                 <button className="btn btn-primary" title="Sets the session status to Live and enables editor" onClick={startInterview} disabled={status==='live'}>Start Interview</button>
@@ -534,9 +554,10 @@ export default function SessionRoomPage() {
           )}
   </div>
 
-        {/* Center */}
-        {focusEditor ? (
-          <div className="grid min-w-0 h-full min-h-0 grid-cols-2 gap-2 p-2">
+  {/* Center */}
+  <div className="order-1 md:order-2 min-w-0 h-full overflow-y-auto">
+  {focusEditor ? (
+          <div className="grid min-w-0 h-full min-h-0 grid-cols-1 md:grid-cols-2 gap-2 p-2">
             <div className="grid min-h-0 grid-rows-[1fr_auto_auto] gap-2">
               <div className="grid min-h-0 grid-rows-2 gap-2">
                 <div className="relative h-full w-full">
@@ -568,7 +589,7 @@ export default function SessionRoomPage() {
                   )}
                 </div>
               </div>
-              <div className="flex items-center gap-2 rounded-md border border-neutral-800 bg-neutral-950/80 px-2 py-2">
+              <div className="sticky top-0 flex items-center gap-2 rounded-md border border-neutral-800 bg-neutral-950/90 px-2 py-2 backdrop-blur supports-[backdrop-filter]:bg-neutral-950/60">
                 <button className="btn" onClick={()=>setFocusEditor(false)}>Exit Focus</button>
                 <button className="btn" onClick={toggleMic} disabled={!callStarted}>{micOn? (<><Mic size={16}/> Mute</>) : (<><MicOff size={16}/> Unmute</> )}</button>
                 <button className="btn" onClick={toggleCam} disabled={!callStarted}>{camOn? (<><Camera size={16}/> Camera Off</>) : (<><CameraOff size={16}/> Camera On</>)}</button>
@@ -603,8 +624,8 @@ export default function SessionRoomPage() {
             </div>
     </div>
   ) : (
-    <div className="grid min-w-0 h-full min-h-0 grid-rows-[240px_auto_1fr_180px]">
-            <div className="grid grid-cols-2 gap-2 p-2">
+  <div className="grid min-w-0 h-full min-h-0 grid-rows-[240px_auto_1fr_180px] md:grid-rows-[240px_auto_1fr_180px]">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-2 p-2">
               <div className="relative h-full w-full">
                 <video ref={localVideoRef} className={`h-full w-full rounded-md bg-black object-cover transition-opacity ${camOn ? 'opacity-100' : 'opacity-0'}`} playsInline muted />
                 {!camOn && (
@@ -634,7 +655,7 @@ export default function SessionRoomPage() {
                 )}
               </div>
             </div>
-            <div className="relative z-30 flex items-center gap-2 border-t border-neutral-800 bg-neutral-950/80 px-2 py-2">
+            <div className="sticky top-0 z-30 flex items-center gap-2 border-t border-neutral-800 bg-neutral-950/90 px-2 py-2 backdrop-blur supports-[backdrop-filter]:bg-neutral-950/60">
               <button className="btn" onClick={()=>setFocusEditor(true)}>Focus Editor</button>
               <button className="btn" onClick={toggleMic} disabled={!callStarted}>{micOn? (<><Mic size={16}/> Mute</>) : (<><MicOff size={16}/> Unmute</> )}</button>
               <button className="btn" onClick={toggleCam} disabled={!callStarted}>{camOn? (<><Camera size={16}/> Camera Off</>) : (<><CameraOff size={16}/> Camera On</>)}</button>
@@ -658,9 +679,10 @@ export default function SessionRoomPage() {
             </div>
     </div>
   )}
+        </div>
 
         {/* Right Sidebar */}
-        <div className="grid h-full grid-rows-[1fr_auto] gap-2 overflow-y-auto border-l border-neutral-800 p-3">
+  <div className="order-3 grid h-full grid-rows-[1fr_auto] gap-2 overflow-y-auto border-t md:border-t-0 md:border-l border-neutral-800 p-3">
           <div>
             <h3 className="mb-2 text-sm font-semibold">Interviewer Score Sheet</h3>
             {user?.role === 'interviewer' ? (
