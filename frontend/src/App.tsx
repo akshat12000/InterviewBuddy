@@ -7,6 +7,7 @@ import DashboardPage from './pages/DashboardPage'
 import SessionRoomPage from './pages/SessionRoomPage'
 import HomePage from './pages/HomePage'
 import ProfilePage from './pages/ProfilePage'
+import NotFoundPage from './pages/NotFoundPage'
 
 function ProtectedRoute({ children }: { children: JSX.Element }) {
   const { user, loading } = useAuth()
@@ -19,7 +20,7 @@ function NavBar() {
   const { user, logout } = useAuth()
   return (
     <header className="sticky top-0 z-40 w-full border-b border-neutral-800 bg-neutral-950/80 backdrop-blur">
-      <div className="mx-auto flex h-14 max-w-7xl items-center gap-4 px-4">
+      <div className="mx-auto flex h-14 max-w-7xl items-center gap-4 px-4 flex-wrap overflow-x-auto">
   <Link to="/" className="flex items-center gap-2 text-sm font-semibold">
           <span className="h-2 w-2 rounded-sm bg-brand-500" />
           <span>InterviewBuddy</span>
@@ -67,6 +68,7 @@ export default function App() {
             <Route path="/profile" element={<ProtectedRoute><ProfilePage /></ProtectedRoute>} />
             <Route path="/dashboard" element={<ProtectedRoute><DashboardPage /></ProtectedRoute>} />
             <Route path="/room/:roomId" element={<ProtectedRoute><SessionRoomPage /></ProtectedRoute>} />
+            <Route path="*" element={<NotFoundPage />} />
           </Routes>
         </Layout>
       </BrowserRouter>

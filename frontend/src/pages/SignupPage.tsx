@@ -1,11 +1,11 @@
 import { useState } from 'react'
 import axios from 'axios'
-import { useNavigate } from 'react-router-dom'
+import { Navigate, useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
 import { Eye, EyeOff } from 'lucide-react'
 
 export default function SignupPage() {
-  const { login } = useAuth()
+  const { login, user } = useAuth()
   const navigate = useNavigate()
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
@@ -30,6 +30,8 @@ export default function SignupPage() {
       setLoading(false)
     }
   }
+
+  if (user) return <Navigate to="/profile" replace />
 
   return (
     <div className="mx-auto grid max-w-md gap-4 px-4 py-10">

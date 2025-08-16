@@ -87,7 +87,7 @@ async function run() {
       problem: problem._id,
       status,
       roomId: rid(),
-      interviewerScores: status === 'completed' ? [
+  interviewerScores: status === 'completed' ? [
         { criterion: 'Problem Solving', score: 7, notes: 'Decent approach' },
         { criterion: 'Code Quality', score: 6 },
         { criterion: 'Communication', score: 8 }

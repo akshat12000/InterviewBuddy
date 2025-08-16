@@ -16,6 +16,14 @@ export default function DashboardPage() {
   const [error, setError] = useState('')
   const navigate = useNavigate()
 
+  // Results modal state
+  const [showResultsModal, setShowResultsModal] = useState(false)
+  const [resultsLoading, setResultsLoading] = useState(false)
+  const [resultsDecision, setResultsDecision] = useState<'selected'|'rejected'|'on-hold'|''>('')
+  const [resultsScores, setResultsScores] = useState<Array<{criterion:string; score:number; notes?:string}>>([])
+  const [resultsError, setResultsError] = useState('')
+  const [resultsTitle, setResultsTitle] = useState<string>('Interview Results')
+
   const createSession = async () => {
     try {
       setCreating(true)
@@ -37,6 +45,28 @@ export default function DashboardPage() {
       setError(e?.response?.data?.message || e.message || 'Failed to create session')
     } finally {
       setCreating(false)
+    }
+  }
+
+  const openResults = async (s: any) => {
+    setShowResultsModal(true)
+    setResultsLoading(true)
+    setResultsError('')
+    setResultsScores([])
+    setResultsDecision('')
+    setResultsTitle(s?.problem?.title ? `Results · ${s.problem.title}` : 'Interview Results')
+    try {
+      const idOrRoom = s?.roomId || s?._id
+      const { data } = await axios.get(`/api/sessions/${idOrRoom}`)
+      const item = data.item || {}
+      const scores = item.interviewerScores || []
+      const decision = item.finalDecision || ''
+      setResultsScores(Array.isArray(scores) ? scores : [])
+      setResultsDecision(decision)
+    } catch (e: any) {
+      setResultsError(e?.response?.data?.message || 'Failed to load results')
+    } finally {
+      setResultsLoading(false)
     }
   }
 
@@ -76,7 +106,13 @@ export default function DashboardPage() {
                 <div className="font-medium">{s.problem?.title}</div>
                 <div className="text-sm text-neutral-400">{s.status}</div>
               </div>
-              <Link to={`/room/${s.roomId || s._id}`} className="btn">Join</Link>
+              {s.status === 'completed' ? (
+                <button className="btn" onClick={() => openResults(s)}>Results</button>
+              ) : s.status === 'cancelled' ? (
+                <span className="text-sm text-neutral-500">Cancelled</span>
+              ) : (
+                <Link to={`/room/${s.roomId || s._id}`} className="btn">Join</Link>
+              )}
             </div>
           ))}
           {!sessions?.items?.length && (
@@ -84,6 +120,51 @@ export default function DashboardPage() {
           )}
         </div>
       </div>
+      {showResultsModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-md rounded-lg border border-neutral-800 bg-neutral-900 p-4 shadow-xl">
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-lg font-semibold">{resultsTitle}</h2>
+              <button className="btn" onClick={() => setShowResultsModal(false)}>Close</button>
+            </div>
+            {resultsLoading ? (
+              <div className="text-sm text-neutral-400">Loading…</div>
+            ) : resultsError ? (
+              <div className="text-sm text-red-400">{resultsError}</div>
+            ) : (
+              <>
+                <div className="mb-3">
+                  <div className="text-sm text-neutral-400">Decision</div>
+                  <div className={
+                    `mt-1 inline-flex items-center rounded px-2 py-1 text-sm font-medium ` +
+                    (resultsDecision === 'selected' ? 'bg-emerald-600/20 text-emerald-300 border border-emerald-800' :
+                     resultsDecision === 'rejected' ? 'bg-red-600/20 text-red-300 border border-red-800' :
+                     'bg-amber-600/20 text-amber-200 border border-amber-800')
+                  }>
+                    {resultsDecision ? (resultsDecision as string).replace(/\b\w/g, c => c.toUpperCase()) : 'N/A'}
+                  </div>
+                </div>
+                <div className="grid gap-2">
+                  <div className="text-sm text-neutral-400">Scores</div>
+                  <div className="grid gap-2">
+                    {resultsScores && resultsScores.length ? resultsScores.map((r, i) => (
+                      <div key={i} className="flex items-center justify-between rounded border border-neutral-800 bg-neutral-950 px-2 py-1 text-sm">
+                        <span className="text-neutral-300">{r.criterion}</span>
+                        <span className="font-semibold">{r.score}/10</span>
+                      </div>
+                    )) : (
+                      <div className="text-sm text-neutral-500">No scores available.</div>
+                    )}
+                  </div>
+                </div>
+              </>
+            )}
+            <div className="mt-4 text-right">
+              <button className="btn" onClick={() => setShowResultsModal(false)}>Done</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

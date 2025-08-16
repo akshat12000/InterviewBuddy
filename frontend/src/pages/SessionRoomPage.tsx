@@ -34,6 +34,32 @@ export default function SessionRoomPage() {
   const [remoteMicOn, setRemoteMicOn] = useState<boolean | null>(null)
   const [remoteCamOn, setRemoteCamOn] = useState<boolean | null>(null)
   const [mediaError, setMediaError] = useState<string>('')
+  // Device selection and testing
+  const [audioInputs, setAudioInputs] = useState<MediaDeviceInfo[]>([])
+  const [videoInputs, setVideoInputs] = useState<MediaDeviceInfo[]>([])
+  const [selectedAudioInId, setSelectedAudioInId] = useState<string>('')
+  const [selectedVideoInId, setSelectedVideoInId] = useState<string>('')
+  const audioCtxRef = useRef<AudioContext | null>(null)
+  const analyserRef = useRef<AnalyserNode | null>(null)
+  const micSourceRef = useRef<MediaStreamAudioSourceNode | null>(null)
+  const micRAFRef = useRef<number | null>(null)
+  const [micLevel, setMicLevel] = useState<number>(0)
+  const [isAssignedInterviewer, setIsAssignedInterviewer] = useState<boolean>(false)
+  const [sessionLoaded, setSessionLoaded] = useState<boolean>(false)
+  const [showResultsModal, setShowResultsModal] = useState<boolean>(false)
+  const [finalScores, setFinalScores] = useState<Array<{criterion:string; score:number; notes?:string}>>([])
+  const [finalDecision, setFinalDecision] = useState<'selected'|'rejected'|'on-hold'|''>('')
+  // Helper to resolve IDs/emails robustly across shapes
+  const getIdString = (x: any): string => {
+    if (!x) return ''
+    if (typeof x === 'string') return x
+    return String(x._id || x.id || x.uid || x.userId || '')
+  }
+  const getEmailString = (x: any): string => {
+    if (!x) return ''
+    if (typeof x === 'string') return ''
+    return String((x.email || '').toLowerCase())
+  }
 
   // WebRTC config with optional TURN (set via Vite env: VITE_TURN_URL, VITE_TURN_USERNAME, VITE_TURN_CREDENTIAL)
   const rtcConfig: RTCConfiguration = (() => {
@@ -104,15 +130,17 @@ export default function SessionRoomPage() {
   })()
 
   useEffect(() => {
-    if (!roomId || !user) return
+    // Only connect sockets for active sessions
+    if (!roomId || !user || !sessionLoaded) return
+    if (status === 'completed' || status === 'cancelled') return
     const s = io('/', { // proxied to backend
       auth: { token: (window as any).token || '' },
       withCredentials: true
     })
     socketRef.current = s
     s.emit('session:join', { roomId })
-  s.on('room:participants', (list) => setParticipants(list))
-  s.on('socket:me', ({ socketId }) => setSocketId(socketId))
+    s.on('room:participants', (list) => setParticipants(list))
+    s.on('socket:me', ({ socketId }) => setSocketId(socketId))
     s.on('code:update', ({ code }) => setCode(code))
     // Buffer ICE candidates until remote description is set to avoid addIceCandidate errors in some browsers
     const pendingCandidates: any[] = []
@@ -176,18 +204,18 @@ export default function SessionRoomPage() {
       s.disconnect()
       cleanupCall()
     }
-  }, [roomId, user])
+  }, [roomId, user, status, sessionLoaded])
 
   // When participants list updates, detect the other peer and auto-initiate if interviewer
   useEffect(() => {
     const other = participants.find(p => p.socketId !== socketId)
-    const shouldInitiate = user?.role === 'interviewer' && other && !callStarted && !pcRef.current
+    const shouldInitiate = (user?.role === 'interviewer' && isAssignedInterviewer) && other && !callStarted && !pcRef.current
     if (shouldInitiate) { startCall(other.socketId!) }
     // Broadcast our current media state so new peer reflects correct UI
     if (socketRef.current && roomId) {
       socketRef.current.emit('media:state', { roomId, micOn, camOn })
     }
-  }, [participants, socketId, callStarted])
+  }, [participants, socketId, callStarted, isAssignedInterviewer])
 
   // Fetch session & problem
   useEffect(() => {
@@ -199,17 +227,33 @@ export default function SessionRoomPage() {
         setSessionId(s._id)
         setProblem(s.problem)
         setStatus(s.status)
+  // results info if completed (align with backend model)
+  const fromServerScores = s.interviewerScores || []
+  const fromServerDecision = s.finalDecision || ''
+        if (s.status === 'completed') {
+          setFinalScores(Array.isArray(fromServerScores) ? fromServerScores : [])
+          setFinalDecision(fromServerDecision)
+          setShowResultsModal(true)
+        }
   // Note: controls are visible to any user with interviewer role
   // Build a map of user id -> name for chat display
   const map: Record<string, string> = {}
   const interviewer = s.interviewer || {}
   const candidate = s.candidate || {}
-  const iid = interviewer._id || interviewer.id || interviewer
-  const cid = candidate._id || candidate.id || candidate
+  const iid = getIdString(interviewer) || interviewer
+  const cid = getIdString(candidate) || candidate
   if (iid && interviewer.name) map[iid] = interviewer.name
   if (cid && candidate.name) map[cid] = candidate.name
   if (user?.id && user.name) map[user.id] = user.name
   setUserNames(map)
+        // Assigned interviewer gating (robust id/email comparison)
+        const interviewerId = getIdString(interviewer)
+        const interviewerEmail = getEmailString(interviewer)
+        const userId = getIdString(user)
+        const userEmail = getEmailString(user)
+        const isAssigned = (interviewerId && userId && String(interviewerId) === String(userId))
+          || (interviewerEmail && userEmail && interviewerEmail === userEmail)
+        setIsAssignedInterviewer(Boolean(isAssigned))
         const lastSnap = (s.codeSnapshots || []).slice(-1)[0]
         if (lastSnap?.code) setCode(lastSnap.code)
         if (lastSnap?.language) setLanguage(lastSnap.language)
@@ -217,19 +261,49 @@ export default function SessionRoomPage() {
   const probs = await axios.get('/api/problems')
   setAllProblems(probs.data.items || [])
       } catch {}
+      finally {
+        setSessionLoaded(true)
+      }
     })()
   }, [roomId])
+
+  // Enumerate devices and react to changes
+  useEffect(() => {
+    async function enumerate() {
+      try {
+        const devs = await navigator.mediaDevices.enumerateDevices()
+        const aud = devs.filter(d => d.kind === 'audioinput')
+        const vid = devs.filter(d => d.kind === 'videoinput')
+        setAudioInputs(aud)
+        setVideoInputs(vid)
+        if (!selectedAudioInId && aud[0]?.deviceId) setSelectedAudioInId(aud[0].deviceId)
+        if (!selectedVideoInId && vid[0]?.deviceId) setSelectedVideoInId(vid[0].deviceId)
+      } catch {}
+    }
+    enumerate()
+    const onChange = () => enumerate()
+    navigator.mediaDevices?.addEventListener?.('devicechange', onChange)
+    return () => navigator.mediaDevices?.removeEventListener?.('devicechange', onChange)
+  }, [])
 
   async function ensureLocalMedia() {
     if (localStreamRef.current) return
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+      const constraints: MediaStreamConstraints = {
+        audio: { deviceId: selectedAudioInId ? { exact: selectedAudioInId } : undefined },
+        video: { deviceId: selectedVideoInId ? { exact: selectedVideoInId } : undefined }
+      }
+      const stream = await navigator.mediaDevices.getUserMedia(constraints)
+      // honor current toggle state
+      stream.getAudioTracks().forEach(t => t.enabled = micOn)
+      stream.getVideoTracks().forEach(t => t.enabled = camOn)
       localStreamRef.current = stream
       if (localVideoRef.current) {
         localVideoRef.current.muted = true
         localVideoRef.current.srcObject = stream
   await localVideoRef.current.play().catch(()=>{ /* autoplay might require gesture */ })
       }
+      startMicMeter()
       setMediaError('')
     } catch (err: any) {
       const name = err?.name || ''
@@ -240,6 +314,82 @@ export default function SessionRoomPage() {
       setMediaError('Camera/Mic error: ' + msg)
       throw err
     }
+  }
+
+  async function refreshLocalMedia() {
+    try {
+      const constraints: MediaStreamConstraints = {
+        audio: { deviceId: selectedAudioInId ? { exact: selectedAudioInId } : undefined },
+        video: { deviceId: selectedVideoInId ? { exact: selectedVideoInId } : undefined }
+      }
+      const newStream = await navigator.mediaDevices.getUserMedia(constraints)
+      newStream.getAudioTracks().forEach(t => t.enabled = micOn)
+      newStream.getVideoTracks().forEach(t => t.enabled = camOn)
+      const oldStream = localStreamRef.current
+      localStreamRef.current = newStream
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = newStream
+        localVideoRef.current.play?.().catch(()=>{})
+      }
+      // Replace tracks in existing connection
+      const pc = pcRef.current
+      if (pc) {
+        const audioTrack = newStream.getAudioTracks()[0]
+        const videoTrack = newStream.getVideoTracks()[0]
+        const audioSender = pc.getSenders().find(s => s.track?.kind === 'audio')
+        const videoSender = pc.getSenders().find(s => s.track?.kind === 'video')
+        if (audioSender && audioTrack) { try { await audioSender.replaceTrack(audioTrack) } catch {} }
+        if (videoSender && videoTrack) { try { await videoSender.replaceTrack(videoTrack) } catch {} }
+      }
+      // stop old tracks
+      oldStream?.getTracks().forEach(t => { try { t.stop() } catch {} })
+      startMicMeter()
+    } catch (e: any) {
+      setMediaError('Failed to apply device change: ' + (e?.message || String(e)))
+    }
+  }
+
+  function startMicMeter() {
+    try {
+      if (!localStreamRef.current) return
+      const track = localStreamRef.current.getAudioTracks()[0]
+      if (!track) return
+      if (!audioCtxRef.current) audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)()
+      const ctx = audioCtxRef.current
+      if (!ctx) return
+      stopMicMeter()
+      const source = ctx.createMediaStreamSource(new MediaStream([track]))
+      const analyser = ctx.createAnalyser()
+      analyser.fftSize = 2048
+      source.connect(analyser)
+      micSourceRef.current = source
+      analyserRef.current = analyser
+      const data = new Uint8Array(analyser.frequencyBinCount)
+      const loop = () => {
+        analyser.getByteTimeDomainData(data)
+        // Compute RMS
+        let sum = 0
+        for (let i = 0; i < data.length; i++) {
+          const v = (data[i] - 128) / 128
+          sum += v * v
+        }
+        const rms = Math.sqrt(sum / data.length)
+        setMicLevel(Math.min(100, Math.max(0, Math.round(rms * 200))))
+        micRAFRef.current = requestAnimationFrame(loop)
+      }
+      micRAFRef.current = requestAnimationFrame(loop)
+    } catch {}
+  }
+
+  function stopMicMeter() {
+    if (micRAFRef.current) {
+      cancelAnimationFrame(micRAFRef.current)
+      micRAFRef.current = null
+    }
+    try { micSourceRef.current?.disconnect() } catch {}
+    try { analyserRef.current?.disconnect() } catch {}
+    micSourceRef.current = null
+    analyserRef.current = null
   }
 
   function createPeer(targetId: string) {
@@ -317,6 +467,7 @@ export default function SessionRoomPage() {
     pcRef.current = null
     localStreamRef.current?.getTracks().forEach(t=>t.stop())
     localStreamRef.current = null
+  stopMicMeter()
     if (localVideoRef.current) localVideoRef.current.srcObject = null
     if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null
     setCallStarted(false)
@@ -346,24 +497,47 @@ export default function SessionRoomPage() {
     socketRef.current?.emit('media:state', { roomId, micOn, camOn: enabled })
   }
 
+  async function onSelectAudioDevice(id: string) {
+    setSelectedAudioInId(id)
+    if (localStreamRef.current) await refreshLocalMedia()
+  }
+
+  async function onSelectVideoDevice(id: string) {
+    setSelectedVideoInId(id)
+    if (localStreamRef.current) await refreshLocalMedia()
+  }
+
+  function testSpeakers() {
+    try {
+      if (!audioCtxRef.current) audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)()
+      const ctx = audioCtxRef.current!
+      const osc = ctx.createOscillator()
+      const gain = ctx.createGain()
+      osc.type = 'sine'
+      osc.frequency.value = 440
+      gain.gain.value = 0.05
+      osc.connect(gain).connect(ctx.destination)
+      osc.start()
+      setTimeout(() => { try { osc.stop() } catch {} try { osc.disconnect() } catch {} try { gain.disconnect() } catch {} }, 500)
+    } catch {}
+  }
+
   const onEdit = (value?: string) => {
     const v = value ?? ''
     setCode(v)
   socketRef.current?.emit('code:update', { roomId, code: v, language })
   }
 
-  const submitScores = async () => {
-    if (!roomId) return
+  const submitScores = async (opts?: { silent?: boolean }) => {
+    if (!sessionId) return
     try {
       setSubmitting(true)
-      // fetch session by roomId
-      const { data } = await axios.get(`/api/sessions/${roomId}`)
-      const sid = data.item._id
-      await axios.post(`/api/sessions/${sid}/score`, { scores })
-      await axios.post(`/api/sessions/${sid}/decision`, { decision })
-      alert('Scores submitted')
+      // post scores and decision to current session
+      await axios.post(`/api/sessions/${sessionId}/score`, { scores })
+      await axios.post(`/api/sessions/${sessionId}/decision`, { decision })
+      if (!opts?.silent) alert('Scores submitted')
     } catch (e: any) {
-      alert(e?.response?.data?.message || 'Failed to submit')
+      if (!opts?.silent) alert(e?.response?.data?.message || 'Failed to submit')
     } finally {
       setSubmitting(false)
     }
@@ -382,6 +556,7 @@ export default function SessionRoomPage() {
 
   async function startInterview() {
     if (!sessionId) return
+  if (status !== 'scheduled') return
     try {
       await axios.patch(`/api/sessions/${sessionId}/status`, { status: 'live' })
       setStatus('live')
@@ -391,8 +566,19 @@ export default function SessionRoomPage() {
     async function endInterview() {
     if (!sessionId) return
     try {
+  // Interviewer must complete all scores (>0) before ending
+  if (user?.role === 'interviewer') {
+    const isComplete = scores.every(s => Number(s.score) > 0)
+    if (!isComplete) {
+      alert('Please complete the score sheet (set all scores) before ending the interview.')
+      document.getElementById('score-sheet')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      return
+    }
+  }
   const ok = window.confirm('End interview and leave the room?')
   if (!ok) return
+  // Save scores silently before marking completed (best effort)
+  if (user?.role === 'interviewer') { try { await submitScores({ silent: true }) } catch {} }
   await axios.patch(`/api/sessions/${sessionId}/status`, { status: 'completed' })
   setStatus('completed')
   socketRef.current?.emit('call:end', { roomId })
@@ -468,14 +654,25 @@ export default function SessionRoomPage() {
     } catch {}
   }
 
+  const isInterviewerRole = user?.role === 'interviewer'
+  const scoresComplete = scores.every(s => Number(s.score) > 0)
+
   return (
   <div className="grid h-dvh grid-rows-[48px_1fr] overflow-hidden">
       <div className="flex items-center gap-2 border-b border-neutral-800 bg-neutral-950 px-3">
         <div className="text-sm font-semibold">Interview Room</div>
         <div className="ml-auto">
-          <button className="btn" onClick={() => {
+          <button className="btn" title={isInterviewerRole && !scoresComplete ? 'Complete all scores to enable Exit' : 'Exit interview'} disabled={isInterviewerRole && !scoresComplete} onClick={async () => {
+            // Require all criteria to be scored (>0) for interviewers
+            const isComplete = scores.every(s => Number(s.score) > 0)
+            if (user?.role === 'interviewer' && !isComplete) {
+              alert('Please complete the score sheet (set all scores) before exiting.')
+              document.getElementById('score-sheet')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+              return
+            }
             const ok = window.confirm('Exit interview? This will end the call and leave the room.')
             if (!ok) return
+            if (user?.role === 'interviewer') { try { await submitScores({ silent: true }) } catch {} }
             socketRef.current?.emit('call:end', { roomId })
             cleanupCall()
             navigate('/dashboard')
@@ -484,6 +681,43 @@ export default function SessionRoomPage() {
           </button>
         </div>
       </div>
+      {showResultsModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-md rounded-lg border border-neutral-800 bg-neutral-900 p-4 shadow-xl">
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-lg font-semibold">Interview Results</h2>
+              <button className="btn" onClick={() => { setShowResultsModal(false); navigate('/dashboard') }}>Close</button>
+            </div>
+            <div className="mb-3">
+              <div className="text-sm text-neutral-400">Decision</div>
+              <div className={
+                `mt-1 inline-flex items-center rounded px-2 py-1 text-sm font-medium ` +
+                (finalDecision === 'selected' ? 'bg-emerald-600/20 text-emerald-300 border border-emerald-800' :
+                 finalDecision === 'rejected' ? 'bg-red-600/20 text-red-300 border border-red-800' :
+                 'bg-amber-600/20 text-amber-200 border border-amber-800')
+              }>
+                {finalDecision ? finalDecision.replace(/\b\w/g, c => c.toUpperCase()) : 'N/A'}
+              </div>
+            </div>
+            <div className="grid gap-2">
+              <div className="text-sm text-neutral-400">Scores</div>
+              <div className="grid gap-2">
+                {finalScores && finalScores.length ? finalScores.map((s, i) => (
+                  <div key={i} className="flex items-center justify-between rounded border border-neutral-800 bg-neutral-950 px-2 py-1 text-sm">
+                    <span className="text-neutral-300">{s.criterion}</span>
+                    <span className="font-semibold">{s.score}/10</span>
+                  </div>
+                )) : (
+                  <div className="text-sm text-neutral-500">No scores available.</div>
+                )}
+              </div>
+            </div>
+            <div className="mt-4 text-right">
+              <button className="btn btn-primary" onClick={() => navigate('/dashboard')}>Go to Dashboard</button>
+            </div>
+          </div>
+        </div>
+      )}
   <div className="grid h-full min-h-0 grid-cols-1 md:grid-cols-[320px_minmax(0,1fr)_360px]">
         {/* Left Sidebar */}
   <div className="order-2 md:order-1 border-b md:border-b-0 md:border-r border-neutral-800 h-full overflow-y-auto">
@@ -516,6 +750,32 @@ export default function SessionRoomPage() {
           </div>
           {/* Chat */}
           <div className="border-t border-neutral-800 p-3">
+            <h3 className="mb-2 text-sm font-semibold text-neutral-300">Devices</h3>
+            <div className="card grid gap-2 p-3 mb-3">
+              <div className="grid gap-1">
+                <label className="text-sm text-neutral-400">Microphone</label>
+                <select className="select" value={selectedAudioInId} onChange={(e)=>onSelectAudioDevice(e.target.value)}>
+                  {audioInputs.length ? audioInputs.map(d => (
+                    <option key={d.deviceId} value={d.deviceId}>{d.label || 'Microphone'}</option>
+                  )) : <option value="">No microphones found</option>}
+                </select>
+                <div className="h-2 rounded bg-neutral-800">
+                  <div className="h-2 rounded bg-brand-500 transition-all" style={{ width: `${micLevel}%` }} />
+                </div>
+              </div>
+              <div className="grid gap-1">
+                <label className="text-sm text-neutral-400">Camera</label>
+                <select className="select" value={selectedVideoInId} onChange={(e)=>onSelectVideoDevice(e.target.value)}>
+                  {videoInputs.length ? videoInputs.map(d => (
+                    <option key={d.deviceId} value={d.deviceId}>{d.label || 'Camera'}</option>
+                  )) : <option value="">No cameras found</option>}
+                </select>
+              </div>
+              <div className="flex gap-2">
+                <button className="btn" onClick={ensureLocalMedia}>Preview Devices</button>
+                <button className="btn" onClick={testSpeakers}>Test Speakers</button>
+              </div>
+            </div>
             <h3 className="mb-2 text-sm font-semibold text-neutral-300">Chat</h3>
             <div ref={chatBoxRef} className="card grid max-h-60 gap-1 overflow-y-auto p-2 text-sm text-neutral-200">
               {chat.map((m, i) => {
@@ -530,12 +790,13 @@ export default function SessionRoomPage() {
               <button className="btn" onClick={sendChat}>Send</button>
             </div>
           </div>
-          {user?.role === 'interviewer' ? (
+      {user?.role === 'interviewer' ? (
             <div className="p-3">
               <div className="grid gap-2">
-                <button className="btn btn-primary" title="Sets the session status to Live and enables editor" onClick={startInterview} disabled={status==='live'}>Start Interview</button>
-                <button className="btn" title="Completes session, ends call for both, and returns to dashboard" onClick={endInterview} disabled={status!=='live'}>End Interview</button>
+  <button className="btn btn-primary" title={isAssignedInterviewer? (status==='scheduled' ? 'Sets the session status to Live and enables editor' : 'Interview cannot be started in current state') : 'Only the assigned interviewer can start the interview'} onClick={startInterview} disabled={status!=='scheduled' || !isAssignedInterviewer}>Start Interview</button>
+  <button className="btn" title={isAssignedInterviewer? (isInterviewerRole && !scoresComplete ? 'Complete all scores to enable End Interview' : 'Completes session, ends call for both, and returns to dashboard') : 'Only the assigned interviewer can end the interview'} onClick={endInterview} disabled={status!=='live' || !isAssignedInterviewer || (isInterviewerRole && !scoresComplete)}>End Interview</button>
                 <div className="text-sm">Status: <b>{status}</b> {status!=='live' && <span className="text-neutral-500">(editor disabled)</span>}</div>
+        {!isAssignedInterviewer && <div className="text-xs text-neutral-500">You are not the assigned interviewer for this session. Controls are read-only.</div>}
                 {!!allProblems.length && (
                   <div className="grid gap-1">
                     <label className="text-sm text-neutral-400">Change Problem</label>
@@ -589,10 +850,14 @@ export default function SessionRoomPage() {
                   )}
                 </div>
               </div>
-              <div className="sticky top-0 flex items-center gap-2 rounded-md border border-neutral-800 bg-neutral-950/90 px-2 py-2 backdrop-blur supports-[backdrop-filter]:bg-neutral-950/60">
+              <div className="sticky top-0 flex flex-wrap items-center gap-2 rounded-md border border-neutral-800 bg-neutral-950/90 px-2 py-2 backdrop-blur supports-[backdrop-filter]:bg-neutral-950/60">
                 <button className="btn" onClick={()=>setFocusEditor(false)}>Exit Focus</button>
-                <button className="btn" onClick={toggleMic} disabled={!callStarted}>{micOn? (<><Mic size={16}/> Mute</>) : (<><MicOff size={16}/> Unmute</> )}</button>
-                <button className="btn" onClick={toggleCam} disabled={!callStarted}>{camOn? (<><Camera size={16}/> Camera Off</>) : (<><CameraOff size={16}/> Camera On</>)}</button>
+                <button className="btn" aria-label={micOn ? 'Mute microphone' : 'Unmute microphone'} onClick={toggleMic}>
+                  {micOn? (<><Mic size={16}/> <span className="hidden sm:inline">Mute</span></>) : (<><MicOff size={16}/> <span className="hidden sm:inline">Unmute</span></> )}
+                </button>
+                <button className="btn" aria-label={camOn ? 'Turn camera off' : 'Turn camera on'} onClick={toggleCam}>
+                  {camOn? (<><Camera size={16}/> <span className="hidden sm:inline">Camera Off</span></>) : (<><CameraOff size={16}/> <span className="hidden sm:inline">Camera On</span></>)}
+                </button>
               </div>
               <div className="card p-3">
                 <h3 className="mb-2 text-sm font-semibold text-neutral-300">Problem</h3>
@@ -607,12 +872,12 @@ export default function SessionRoomPage() {
               </div>
             </div>
             <div className="grid grid-rows-[auto_1fr_auto] gap-2 min-h-0">
-              <div className="flex items-center gap-2">
-                <label className="text-sm text-neutral-400">Language</label>
-                <select className="select" value={language} onChange={(e)=>setLanguage(e.target.value as any)} disabled={editingDisabled}>
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="hidden sm:inline text-sm text-neutral-400">Language</label>
+                <select className="select w-full sm:w-auto" value={language} onChange={(e)=>setLanguage(e.target.value as any)} disabled={editingDisabled} aria-label="Language">
                   {languageOptions.map(opt => (<option key={opt.id} value={opt.id}>{opt.label}</option>))}
                 </select>
-                <button className="btn" onClick={runCode} disabled={running || editingDisabled}><Play size={16}/> {running?'Running...':'Run'}</button>
+                <button className="btn" onClick={runCode} disabled={running || editingDisabled} aria-label="Run code"><Play size={16}/> <span className="hidden sm:inline">{running?'Running...':'Run'}</span></button>
               </div>
               <div className="min-h-0">
                 <Editor height="100%" language={language} value={code} onChange={onEdit} options={{ readOnly: editingDisabled }} />
@@ -624,7 +889,7 @@ export default function SessionRoomPage() {
             </div>
     </div>
   ) : (
-  <div className="grid min-w-0 h-full min-h-0 grid-rows-[240px_auto_1fr_180px] md:grid-rows-[240px_auto_1fr_180px]">
+  <div className="grid min-w-0 h-full min-h-0 grid-rows-[minmax(180px,32vh)_auto_1fr_minmax(140px,24vh)] md:grid-rows-[240px_auto_1fr_180px]">
       <div className="grid grid-cols-1 md:grid-cols-2 gap-2 p-2">
               <div className="relative h-full w-full">
                 <video ref={localVideoRef} className={`h-full w-full rounded-md bg-black object-cover transition-opacity ${camOn ? 'opacity-100' : 'opacity-0'}`} playsInline muted />
@@ -655,16 +920,16 @@ export default function SessionRoomPage() {
                 )}
               </div>
             </div>
-            <div className="sticky top-0 z-30 flex items-center gap-2 border-t border-neutral-800 bg-neutral-950/90 px-2 py-2 backdrop-blur supports-[backdrop-filter]:bg-neutral-950/60">
+            <div className="sticky top-0 z-30 flex flex-wrap items-center gap-2 border-t border-neutral-800 bg-neutral-950/90 px-2 py-2 backdrop-blur supports-[backdrop-filter]:bg-neutral-950/60">
               <button className="btn" onClick={()=>setFocusEditor(true)}>Focus Editor</button>
-              <button className="btn" onClick={toggleMic} disabled={!callStarted}>{micOn? (<><Mic size={16}/> Mute</>) : (<><MicOff size={16}/> Unmute</> )}</button>
-              <button className="btn" onClick={toggleCam} disabled={!callStarted}>{camOn? (<><Camera size={16}/> Camera Off</>) : (<><CameraOff size={16}/> Camera On</>)}</button>
-              <div className="ml-auto flex items-center gap-2">
-                <label className="text-sm text-neutral-400">Language</label>
-                <select className="select" value={language} onChange={(e)=>setLanguage(e.target.value as any)} disabled={editingDisabled}>
+              <button className="btn" aria-label={micOn ? 'Mute microphone' : 'Unmute microphone'} onClick={toggleMic}>{micOn? (<><Mic size={16}/> <span className="hidden sm:inline">Mute</span></>) : (<><MicOff size={16}/> <span className="hidden sm:inline">Unmute</span></> )}</button>
+              <button className="btn" aria-label={camOn ? 'Turn camera off' : 'Turn camera on'} onClick={toggleCam}>{camOn? (<><Camera size={16}/> <span className="hidden sm:inline">Camera Off</span></>) : (<><CameraOff size={16}/> <span className="hidden sm:inline">Camera On</span></>)}</button>
+              <div className="ml-0 sm:ml-auto w-full sm:w-auto flex flex-wrap items-center gap-2 justify-between sm:justify-end">
+                <label className="hidden sm:inline text-sm text-neutral-400">Language</label>
+                <select className="select w-full sm:w-auto" value={language} onChange={(e)=>setLanguage(e.target.value as any)} disabled={editingDisabled} aria-label="Language">
                   {languageOptions.map(opt => (<option key={opt.id} value={opt.id}>{opt.label}</option>))}
                 </select>
-                <button className="btn" onClick={runCode} disabled={running || editingDisabled}><Play size={16}/> {running?'Running...':'Run'}</button>
+                <button className="btn" onClick={runCode} disabled={running || editingDisabled} aria-label="Run code"><Play size={16}/> <span className="hidden sm:inline">{running?'Running...':'Run'}</span></button>
               </div>
             </div>
             {mediaError && (
@@ -683,7 +948,7 @@ export default function SessionRoomPage() {
 
         {/* Right Sidebar */}
   <div className="order-3 grid h-full grid-rows-[1fr_auto] gap-2 overflow-y-auto border-t md:border-t-0 md:border-l border-neutral-800 p-3">
-          <div>
+          <div id="score-sheet">
             <h3 className="mb-2 text-sm font-semibold">Interviewer Score Sheet</h3>
             {user?.role === 'interviewer' ? (
               <div className="grid gap-3">
@@ -706,14 +971,17 @@ export default function SessionRoomPage() {
                     <option value="on-hold">On Hold</option>
                   </select>
                 </div>
+                {!scoresComplete && (
+                  <div className="text-xs text-amber-400">Set all scores above 0 to enable Exit/End Interview.</div>
+                )}
               </div>
             ) : (
               <div className="text-sm text-neutral-400">Only interviewer can see the score sheet.</div>
             )}
           </div>
-          {user?.role === 'interviewer' && (
+      {user?.role === 'interviewer' && (
             <div>
-              <button className="btn btn-primary w-full" onClick={submitScores} disabled={submitting}>{submitting?'Submitting...':'Submit Scores'}</button>
+        <button className="btn btn-primary w-full" onClick={() => submitScores()} disabled={submitting}>{submitting?'Submitting...':'Submit Scores'}</button>
             </div>
           )}
         </div>

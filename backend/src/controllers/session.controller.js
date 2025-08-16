@@ -84,10 +84,15 @@ const scoreSchema = z.object({ scores: z.array(z.object({ criterion: z.string(),
 exports.addScore = async (req, res, next) => {
   try {
     const { scores } = scoreSchema.parse(req.body);
-  const s0 = await Session.findById(req.params.id);
-  if (!s0) return res.status(404).json({ message: 'Not found' });
-  if (s0.interviewer?.toString() !== req.user.uid) return res.status(403).json({ message: 'Forbidden' });
-  const s = await Session.findByIdAndUpdate(req.params.id, { $push: { interviewerScores: { $each: scores } } }, { new: true });
+    const s0 = await Session.findById(req.params.id);
+    if (!s0) return res.status(404).json({ message: 'Not found' });
+    if (s0.interviewer?.toString() !== req.user.uid) return res.status(403).json({ message: 'Forbidden' });
+    // Replace existing scores with the latest submission to avoid duplicates
+    const s = await Session.findByIdAndUpdate(
+      req.params.id,
+      { $set: { interviewerScores: scores } },
+      { new: true }
+    );
     res.json({ item: s });
   } catch (e) {
     next(e);
