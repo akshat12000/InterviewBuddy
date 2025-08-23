@@ -17,3 +17,15 @@ exports.requireRole = (role) => (req, res, next) => {
   if (req.user?.role !== role) return res.status(403).json({ message: 'Forbidden' });
   next();
 };
+
+// Optional auth: attach req.user if token present, never blocks
+exports.optionalAuth = (req, res, next) => {
+  try {
+    const header = req.headers.authorization;
+    const token = req.cookies?.token || (header && header.startsWith('Bearer ') ? header.slice(7) : null);
+    if (!token) return next();
+    const payload = jwt.verify(token, process.env.JWT_SECRET);
+    req.user = payload;
+  } catch {}
+  next();
+};

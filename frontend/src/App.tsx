@@ -8,6 +8,9 @@ import SessionRoomPage from './pages/SessionRoomPage'
 import HomePage from './pages/HomePage'
 import ProfilePage from './pages/ProfilePage'
 import NotFoundPage from './pages/NotFoundPage'
+import ArticlesPage from './pages/ArticlesPage'
+import ArticleDetailPage from './pages/ArticleDetailPage'
+import ArticleEditPage from './pages/ArticleEditPage'
 
 function ProtectedRoute({ children }: { children: JSX.Element }) {
   const { user, loading } = useAuth()
@@ -25,9 +28,10 @@ function NavBar() {
           <span className="h-2 w-2 rounded-sm bg-brand-500" />
           <span>InterviewBuddy</span>
         </Link>
-        {user && (
+        {user && (<>
           <Link to="/dashboard" className="text-neutral-300 hover:text-white">Dashboard</Link>
-        )}
+          <Link to="/articles" className="text-neutral-300 hover:text-white">Articles</Link>
+        </>)}
         <div className="ml-auto flex items-center gap-3">
           {user ? (
             <>
@@ -67,6 +71,9 @@ export default function App() {
             <Route path="/signup" element={<SignupPage />} />
             <Route path="/profile" element={<ProtectedRoute><ProfilePage /></ProtectedRoute>} />
             <Route path="/dashboard" element={<ProtectedRoute><DashboardPage /></ProtectedRoute>} />
+            <Route path="/articles" element={<ProtectedRoute><ArticlesPage /></ProtectedRoute>} />
+            <Route path="/articles/new" element={<ProtectedRoute><ArticleEditPage /></ProtectedRoute>} />
+            <Route path="/articles/:id" element={<ProtectedRoute><ArticleDetailPage /></ProtectedRoute>} />
             <Route path="/room/:roomId" element={<ProtectedRoute><SessionRoomPage /></ProtectedRoute>} />
             <Route path="*" element={<NotFoundPage />} />
           </Routes>

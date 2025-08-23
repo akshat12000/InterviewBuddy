@@ -13,6 +13,7 @@ const userRoutes = require('./src/routes/user.routes');
 const sessionRoutes = require('./src/routes/session.routes');
 const problemRoutes = require('./src/routes/problem.routes');
 const executeRoutes = require('./src/routes/execute.routes');
+const articleRoutes = require('./src/routes/article.routes');
 
 const { authSocketMiddleware } = require('./src/socket/authSocket');
 const { registerSessionHandlers } = require('./src/socket/sessionSocket');
@@ -82,6 +83,7 @@ app.use('/api/users', userRoutes);
 app.use('/api/sessions', sessionRoutes);
 app.use('/api/problems', problemRoutes);
 app.use('/api/execute', executeRoutes);
+app.use('/api/articles', articleRoutes);
 
 // Serve frontend (static) if built
 const distPath = path.join(__dirname, '..', 'frontend', 'dist');
