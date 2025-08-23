@@ -4,7 +4,7 @@ import { useAuth } from '../auth/AuthContext'
 import io from 'socket.io-client'
 import Editor from '@monaco-editor/react'
 import axios from 'axios'
-import { Camera, CameraOff, Mic, MicOff, Play, LogOut } from 'lucide-react'
+import { Camera, CameraOff, Mic, MicOff, Play } from 'lucide-react'
 
 export default function SessionRoomPage() {
   const { roomId } = useParams()
@@ -527,6 +527,11 @@ export default function SessionRoomPage() {
     setCode(v)
   socketRef.current?.emit('code:update', { roomId, code: v, language })
   }
+  async function sendChat() {
+    if (!chatInput.trim() || !roomId) return
+    socketRef.current?.emit('chat:message', { roomId, text: chatInput.trim() })
+    setChatInput('')
+  }
 
   const submitScores = async (opts?: { silent?: boolean }) => {
     if (!sessionId) return
@@ -562,6 +567,25 @@ export default function SessionRoomPage() {
       setStatus('live')
     } catch {}
   }
+  async function exitInterview() {
+    // Leave the room without completing the session
+    try {
+      if (user?.role === 'interviewer') {
+        const isComplete = scores.every(s => Number(s.score) > 0)
+        if (!isComplete) {
+          alert('Please complete the score sheet (set all scores) before exiting the interview.')
+          document.getElementById('score-sheet')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+          return
+        }
+        // best-effort auto-save
+        try { await submitScores({ silent: true }) } catch {}
+      }
+      const ok = window.confirm('Exit the interview and leave the room? The session will remain live for others.')
+      if (!ok) return
+      cleanupCall()
+      navigate('/dashboard')
+    } catch {}
+  }
 
     async function endInterview() {
     if (!sessionId) return
@@ -587,100 +611,68 @@ export default function SessionRoomPage() {
     } catch {}
   }
 
-  function runCode() {
+  
+
+  async function runCode() {
     setRunOutput('')
-    if (language !== 'javascript') {
-      setRunOutput('Run is available for JavaScript in this MVP. Other languages coming soon.')
-      return
-    }
     setRunning(true)
-    const blob = new Blob([
-      `self.onmessage = async (e) => {
-        const code = e.data;
-        let logs = [];
-        const originalLog = console.log;
-        console.log = (...args) => { logs.push(args.map(a => typeof a==='object'? JSON.stringify(a) : String(a)).join(' ')); };
-        try {
-          const fn = new Function(code);
-          const result = await Promise.resolve(fn());
-          postMessage({ ok: true, logs, result: typeof result==='undefined'? '' : String(result) });
-        } catch (err) {
-          postMessage({ ok: false, logs, error: String(err) });
-        } finally { console.log = originalLog; }
-      };`
-    ], { type: 'application/javascript' })
-    const worker = new Worker(URL.createObjectURL(blob))
-    worker.onmessage = (ev) => {
-      const { ok, logs, result, error } = ev.data || {}
-      let out = ''
-      if (logs && logs.length) out += logs.join('\n') + '\n'
-      if (ok && result) out += result + '\n'
-      if (!ok && error) out += 'Error: ' + error + '\n'
-      setRunOutput(out.trim())
+    try {
+      // For JS, keep fast in-browser worker path
+      if (language === 'javascript') {
+        await new Promise<void>((resolve) => {
+          const blob = new Blob([
+            `self.onmessage = async (e) => {
+              const code = e.data;
+              let logs = [];
+              const originalLog = console.log;
+              console.log = (...args) => { logs.push(args.map(a => typeof a==='object'? JSON.stringify(a) : String(a)).join(' ')); };
+              try {
+                const fn = new Function(code);
+                const result = await Promise.resolve(fn());
+                postMessage({ ok: true, logs, result: typeof result==='undefined'? '' : String(result) });
+              } catch (err) {
+                postMessage({ ok: false, logs, error: String(err) });
+              } finally { console.log = originalLog; }
+            };`
+          ], { type: 'application/javascript' })
+          const worker = new Worker(URL.createObjectURL(blob))
+          worker.onmessage = (ev) => {
+            const { ok, logs, result, error } = ev.data || {}
+            let out = ''
+            if (logs && logs.length) out += logs.join('\n') + '\n'
+            if (ok && result) out += result + '\n'
+            if (!ok && error) out += 'Error: ' + error + '\n'
+            setRunOutput(out.trim())
+            worker.terminate()
+            resolve()
+          }
+          worker.onerror = () => { worker.terminate(); resolve() }
+          worker.postMessage(code)
+        })
+        return
+      }
+      // For other languages, call backend executor
+      const { data } = await axios.post('/api/execute', { language, code })
+      setRunOutput(String(data?.output || '').trim() || '(no output)')
+    } catch (e: any) {
+      const msg = e?.response?.data?.message || e?.message || 'Run failed'
+      setRunOutput(`Error: ${msg}`)
+    } finally {
       setRunning(false)
-      worker.terminate()
     }
-    worker.onerror = (e) => {
-      setRunOutput('Worker error: ' + e.message)
-      setRunning(false)
-      worker.terminate()
-    }
-    worker.postMessage(code)
   }
 
-  async function sendChat() {
-    if (!chatInput.trim() || !roomId) return
-    socketRef.current?.emit('chat:message', { roomId, text: chatInput.trim() })
-    setChatInput('')
-  }
-
-  // Auto-scroll chat to bottom on new messages
-  useEffect(() => {
-    if (chatBoxRef.current) {
-      chatBoxRef.current.scrollTop = chatBoxRef.current.scrollHeight
-    }
-  }, [chat])
-
-  // Simplified: no device selection UI; default devices used
-
+  // Helpers for UI controls
+  const isInterviewerRole = user?.role === 'interviewer'
+  const scoresComplete = scores.every(s => Number(s.score) > 0)
   async function changeProblem(pid: string) {
     if (!sessionId || !pid) return
     try {
       await axios.patch(`/api/sessions/${sessionId}/problem`, { problem: pid })
-      // sync to room
-      socketRef.current?.emit('problem:select', { roomId, problemId: pid })
-      const { data } = await axios.get(`/api/problems/${pid}`)
-      setProblem(data.item)
     } catch {}
   }
-
-  const isInterviewerRole = user?.role === 'interviewer'
-  const scoresComplete = scores.every(s => Number(s.score) > 0)
-
   return (
-  <div className="grid h-dvh grid-rows-[48px_1fr] overflow-hidden">
-      <div className="flex items-center gap-2 border-b border-neutral-800 bg-neutral-950 px-3">
-        <div className="text-sm font-semibold">Interview Room</div>
-        <div className="ml-auto">
-          <button className="btn" title={isInterviewerRole && !scoresComplete ? 'Complete all scores to enable Exit' : 'Exit interview'} disabled={isInterviewerRole && !scoresComplete} onClick={async () => {
-            // Require all criteria to be scored (>0) for interviewers
-            const isComplete = scores.every(s => Number(s.score) > 0)
-            if (user?.role === 'interviewer' && !isComplete) {
-              alert('Please complete the score sheet (set all scores) before exiting.')
-              document.getElementById('score-sheet')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-              return
-            }
-            const ok = window.confirm('Exit interview? This will end the call and leave the room.')
-            if (!ok) return
-            if (user?.role === 'interviewer') { try { await submitScores({ silent: true }) } catch {} }
-            socketRef.current?.emit('call:end', { roomId })
-            cleanupCall()
-            navigate('/dashboard')
-          }}>
-            <LogOut size={16}/> Exit
-          </button>
-        </div>
-      </div>
+    <>
       {showResultsModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
           <div className="w-full max-w-md rounded-lg border border-neutral-800 bg-neutral-900 p-4 shadow-xl">
@@ -718,7 +710,7 @@ export default function SessionRoomPage() {
           </div>
         </div>
       )}
-  <div className="grid h-full min-h-0 grid-cols-1 md:grid-cols-[320px_minmax(0,1fr)_360px]">
+      <div className="grid h-full min-h-0 grid-cols-1 md:grid-cols-[320px_minmax(0,1fr)_360px]">
         {/* Left Sidebar */}
   <div className="order-2 md:order-1 border-b md:border-b-0 md:border-r border-neutral-800 h-full overflow-y-auto">
           <div className="p-3">
@@ -794,6 +786,7 @@ export default function SessionRoomPage() {
             <div className="p-3">
               <div className="grid gap-2">
   <button className="btn btn-primary" title={isAssignedInterviewer? (status==='scheduled' ? 'Sets the session status to Live and enables editor' : 'Interview cannot be started in current state') : 'Only the assigned interviewer can start the interview'} onClick={startInterview} disabled={status!=='scheduled' || !isAssignedInterviewer}>Start Interview</button>
+  <button className="btn" title={isAssignedInterviewer? (isInterviewerRole && !scoresComplete ? 'Complete all scores to enable Exit Interview' : 'Leaves the room for you only; session stays live') : 'Only the assigned interviewer can exit the interview'} onClick={exitInterview} disabled={status!=='live' || !isAssignedInterviewer || (isInterviewerRole && !scoresComplete)}>Exit Interview</button>
   <button className="btn" title={isAssignedInterviewer? (isInterviewerRole && !scoresComplete ? 'Complete all scores to enable End Interview' : 'Completes session, ends call for both, and returns to dashboard') : 'Only the assigned interviewer can end the interview'} onClick={endInterview} disabled={status!=='live' || !isAssignedInterviewer || (isInterviewerRole && !scoresComplete)}>End Interview</button>
                 <div className="text-sm">Status: <b>{status}</b> {status!=='live' && <span className="text-neutral-500">(editor disabled)</span>}</div>
         {!isAssignedInterviewer && <div className="text-xs text-neutral-500">You are not the assigned interviewer for this session. Controls are read-only.</div>}
@@ -986,6 +979,6 @@ export default function SessionRoomPage() {
           )}
         </div>
       </div>
-    </div>
+    </>
   )
 }
