@@ -11,6 +11,17 @@ A modern live coding interview platform with real‑time video, collaborative ed
 - Media state sync: mic/camera toggles reflect on both sides with overlays
 - Focus Editor mode: split view to maximize editor while keeping videos visible
 - Interviewer score sheet and final decision stored with the session
+- **Articles section**: Publish, edit, delete, and browse articles with rich content
+- **Comments**: Add, like/dislike, and delete comments on articles
+- **Likes/Dislikes**: React to articles and comments; mutually exclusive per user
+- **Unique Views**: Article views counted once per user (auth required)
+- **Sorting & Search**: List articles by newest, most viewed, or top voted; full-text search
+- **Tags**: Tag articles and filter by tag
+- **Author Controls**: Only authors can edit/delete their own articles/comments
+- **Markdown/HTML**: Content is sanitized for safety; preview before publishing
+- **Pagination**: Article list supports paging for large collections
+- **Slugs & SEO**: Articles have unique slugs for clean URLs and sharing
+- **Frontend**: Modern UI with icons, author badges, and comment UX
 
 ## Tech Stack
 - Backend: Node.js, Express, MongoDB/Mongoose, Socket.IO, JWT (cookies), Zod, dotenv, bcryptjs
@@ -65,6 +76,10 @@ Notes
    - Controls: Mute, Camera, Language, Run
    - Focus Editor: stacks videos vertically on the left and enlarges the editor
    - Score Sheet (interviewer only): sliders, notes, and final decision
+4) Articles (logged-in users):
+   - `/articles`: List/search/sort articles; author controls for own posts
+   - `/articles/:slug`: Article detail, reactions, comments, edit/delete for author
+   - `/articles/new`: Create or edit article; preview mode
 
 ## Focus Editor Behavior
 - Default mode keeps videos side‑by‑side with controls and editor below.
@@ -90,3 +105,20 @@ Notes
 
 ## License
 MVP code for internal/testing use. Review and update before production deployment.
+
+## API Endpoints (Articles)
+- `GET /api/articles`: List articles (supports q, sort, page, limit, tag)
+- `GET /api/articles/:idOrSlug`: Get article by id or slug
+- `POST /api/articles`: Create (auth required)
+- `PUT /api/articles/:id`: Update (author only)
+- `DELETE /api/articles/:id`: Delete (author only)
+- `POST /api/articles/:idOrSlug/like|unlike|dislike|undislike`: React to article
+- `POST /api/articles/:idOrSlug/comments`: Add comment
+- `DELETE /api/articles/:idOrSlug/comments/:cid`: Delete comment (author only)
+- `POST /api/articles/:idOrSlug/comments/:cid/like|unlike|dislike|undislike`: React to comment
+
+## Usage Notes
+- Only logged-in users can publish, react, or comment
+- Views are counted once per user; likes/dislikes are mutually exclusive
+- Author controls (edit/delete) appear only for your own articles/comments
+- Content is sanitized for safety; Markdown support can be extended

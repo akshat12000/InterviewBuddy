@@ -15,26 +15,24 @@ export default function ArticleDetailPage() {
   async function load() {
     setLoading(true)
     try {
-      const { data } = await axios.get(`/api/articles/${id}`)
+  const { data } = await axios.get(`/api/articles/${id}`)
       setItem(data.item)
     } finally { setLoading(false) }
   }
 
-  async function like() {
-    await axios.post(`/api/articles/${id}/like`)
-    await load()
+  async function likeToggle() {
+    try {
+      const liked = !!item.likes?.some((l: any) => String(l.user) === String(user?.id))
+      await axios.post(`/api/articles/${id}/${liked ? 'unlike' : 'like'}`)
+      await load()
+    } catch (e: any) { alert(e?.response?.data?.message || 'Failed') }
   }
-  async function unlike() {
-    await axios.post(`/api/articles/${id}/unlike`)
-    await load()
-  }
-  async function dislike() {
-    await axios.post(`/api/articles/${id}/dislike`)
-    await load()
-  }
-  async function undislike() {
-    await axios.post(`/api/articles/${id}/undislike`)
-    await load()
+  async function dislikeToggle() {
+    try {
+      const disliked = !!item.dislikes?.some((l: any) => String(l.user) === String(user?.id))
+      await axios.post(`/api/articles/${id}/${disliked ? 'undislike' : 'dislike'}`)
+      await load()
+    } catch (e: any) { alert(e?.response?.data?.message || 'Failed') }
   }
   async function addComment() {
     if (!comment.trim()) return
@@ -62,8 +60,7 @@ export default function ArticleDetailPage() {
   if (loading) return <div className="p-4">Loading...</div>
   if (!item) return <div className="p-4">Not found</div>
 
-  const liked = !!item.likes?.some((l: any) => String(l.user) === String(user?.id))
-  const disliked = !!item.dislikes?.some((l: any) => String(l.user) === String(user?.id))
+  // compute toggles inside handlers; no local liked/disliked here
   const authorId = item?.author?._id || item?.author?.id || item?.author
   const isAuthor = !!(user?.id && authorId && String(user.id) === String(authorId))
   async function del() {
@@ -80,13 +77,13 @@ export default function ArticleDetailPage() {
           By {item.author?.name || 'Unknown'} • {new Date(item.createdAt).toLocaleString()} • {item.views} views • {(item.likes?.length||0)} likes • {(item.dislikes?.length||0)} dislikes
         </div>
       </div>
-      <div className="prose prose-invert max-w-none whitespace-pre-wrap">{item.content}</div>
+  <div className="prose prose-invert max-w-none" dangerouslySetInnerHTML={{ __html: item.content }} />
       <div className="mt-4 flex gap-2 items-center flex-wrap">
-  <button className="btn" onClick={liked ? unlike : like}>{liked? <><ThumbsUp size={16}/> Unlike</> : <><ThumbsUp size={16}/> Like</>}</button>
-  <button className="btn" onClick={disliked ? undislike : dislike}><ThumbsDown size={16}/> {disliked? 'Undislike' : 'Dislike'}</button>
+  <button className="btn" onClick={likeToggle}><ThumbsUp size={16}/> Like</button>
+  <button className="btn" onClick={dislikeToggle}><ThumbsDown size={16}/> Dislike</button>
         {isAuthor && (
           <>
-            <button className="btn" onClick={() => (window.location.href = `/articles/new?edit=${id}`)}><Pencil size={16}/> Edit</button>
+            <button className="btn" onClick={() => (window.location.href = `/articles/new?edit=${item._id}`)}><Pencil size={16}/> Edit</button>
             <button className="btn" onClick={del}><Trash2 size={16}/> Delete</button>
           </>
         )}

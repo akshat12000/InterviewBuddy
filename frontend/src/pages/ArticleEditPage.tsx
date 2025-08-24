@@ -8,6 +8,7 @@ export default function ArticleEditPage() {
   const editId = params.get('edit')
   const [title, setTitle] = useState('')
   const [content, setContent] = useState('')
+    const [preview, setPreview] = useState(false)
   const [tags, setTags] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
@@ -38,6 +39,12 @@ export default function ArticleEditPage() {
         <input className="input" placeholder="Title" value={title} onChange={e=>setTitle(e.target.value)} />
         <textarea className="textarea min-h-[300px]" placeholder="Share your knowledge..." value={content} onChange={e=>setContent(e.target.value)} />
         <input className="input" placeholder="Tags (comma separated)" value={tags} onChange={e=>setTags(e.target.value)} />
+          <div className="flex items-center gap-2">
+            <label className="inline-flex items-center gap-2 text-sm text-neutral-400"><input type="checkbox" checked={preview} onChange={e=>setPreview(e.target.checked)} /> Preview</label>
+          </div>
+          {preview && (
+            <div className="prose prose-invert max-w-none border border-neutral-800 rounded-lg p-3" dangerouslySetInnerHTML={{ __html: content }} />
+          )}
         <div className="flex gap-2">
           <button className="btn" onClick={()=>nav(-1)}>Cancel</button>
           <button className="btn btn-primary" disabled={submitting} onClick={save}>{submitting? 'Publishing...' : 'Publish'}</button>

@@ -61,8 +61,9 @@ exports.login = async (req, res, next) => {
 };
 
 exports.me = async (req, res) => {
-  const user = await User.findById(req.user.uid).select('-password');
-  res.json({ user });
+  const u = await User.findById(req.user.uid).select('-password');
+  if (!u) return res.status(401).json({ message: 'Unauthorized' });
+  res.json({ user: { id: u.id, name: u.name, email: u.email, role: u.role } });
 };
 
 exports.logout = (req, res) => {
