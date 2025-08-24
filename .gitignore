@@ -1,5 +1,6 @@
+# Root ignore
+.cache/
 node_modules/
 .env
 npm-debug.log*
 .DS_Store
-.cache/

@@ -1,5 +1,7 @@
 // Using Node.js built-in fetch (Node 18+), no external HTTP client needed
 const { z } = require('zod');
+const fs = require('fs');
+const path = require('path');
 
 // Languages we treat as executable and map to Piston runtimes
 const languageMap = {
@@ -65,7 +67,11 @@ exports.executeCode = async (req, res, next) => {
 
     const baseUrl = process.env.PISTON_BASE_URL || 'https://emkc.org/api/v2/piston';
     // Query and cache runtimes for 5 minutes to obtain the required version string
-    const runtime = await getRuntime(baseUrl, mapped);
+    let runtime = await getRuntime(baseUrl, mapped);
+    // Fallback to disk cache if network fails and memory has nothing
+    if (!runtime) {
+      runtime = getFallbackRuntime(mapped);
+    }
     if (!runtime) {
       return res.status(502).json({ message: `No runtime available for language: ${mapped}` });
     }
@@ -77,7 +83,7 @@ exports.executeCode = async (req, res, next) => {
       stdin: stdin || '',
       args: [],
     };
-    const resp = await fetch(`${baseUrl}/execute`, {
+  const resp = await fetch(`${baseUrl}/execute`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       // Piston accepts files: [{ content }]; omit name to avoid extension mismatches
@@ -109,15 +115,59 @@ exports.executeCode = async (req, res, next) => {
 
 // Simple in-memory cache
 let runtimeCache = { ts: 0, list: [] };
+// Store cache inside backend/.cache to keep it scoped to the backend project
+const CACHE_DIR = path.join(__dirname, '..', '..', '.cache');
+const RUNTIME_CACHE_FILE = path.join(CACHE_DIR, 'piston_runtimes.json');
+// Legacy location (repo root). Kept for backward-compat read during migration.
+const LEGACY_RUNTIME_CACHE_FILE = path.join(__dirname, '..', '..', '..', '.cache', 'piston_runtimes.json');
+
+function ensureCacheDir() {
+  try { fs.mkdirSync(CACHE_DIR, { recursive: true }); } catch {}
+}
+
+function readDiskCache() {
+  try {
+    const raw = fs.readFileSync(RUNTIME_CACHE_FILE, 'utf8');
+    const { ts, list } = JSON.parse(raw);
+    if (Array.isArray(list)) return { ts: ts || 0, list };
+  } catch {}
+  // Try legacy root path if new path missing
+  try {
+    const raw = fs.readFileSync(LEGACY_RUNTIME_CACHE_FILE, 'utf8');
+    const { ts, list } = JSON.parse(raw);
+    if (Array.isArray(list)) {
+      // Write back to new scoped location for future reads
+      const data = { ts: ts || 0, list };
+      try { writeDiskCache(data); } catch {}
+      return data;
+    }
+  } catch {}
+  return { ts: 0, list: [] };
+}
+
+function writeDiskCache(data) {
+  try {
+    ensureCacheDir();
+    fs.writeFileSync(RUNTIME_CACHE_FILE, JSON.stringify(data), 'utf8');
+  } catch {}
+}
 async function getRuntime(baseUrl, language) {
   const now = Date.now();
   if (runtimeCache.list.length && now - runtimeCache.ts < 5 * 60 * 1000) {
     return pickRuntime(runtimeCache.list, language);
   }
-  const resp = await fetch(`${baseUrl}/runtimes`, { headers: { 'accept': 'application/json' } });
-  if (!resp.ok) return null;
-  const list = await resp.json();
-  runtimeCache = { ts: now, list: Array.isArray(list) ? list : [] };
+  try {
+    const resp = await fetch(`${baseUrl}/runtimes`, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(10000) });
+    if (!resp.ok) throw new Error('bad status');
+    const list = await resp.json();
+    runtimeCache = { ts: now, list: Array.isArray(list) ? list : [] };
+    if (runtimeCache.list.length) writeDiskCache(runtimeCache);
+  } catch (e) {
+    // Try disk cache if fetch fails
+    const disk = readDiskCache();
+    if (disk.list.length) runtimeCache = disk;
+    else return null;
+  }
   return pickRuntime(runtimeCache.list, language);
 }
 
@@ -138,3 +188,46 @@ function safeCmpVer(a = '', b = '') {
   }
   return 0;
 }
+
+// Fallback hardcoded versions in case Piston endpoint is unavailable and no cache exists
+const FALLBACK_VERSIONS = {
+  javascript: '18',
+  typescript: '5',
+  python: '3.10',
+  'c++': '10',
+  java: '17',
+  csharp: '6',
+  go: '1.20',
+  rust: '1.70',
+  php: '8',
+  ruby: '3.1',
+  kotlin: '1.8',
+  swift: '5.7',
+  scala: '2.13',
+  bash: '5',
+};
+
+function getFallbackRuntime(language) {
+  const version = FALLBACK_VERSIONS[language];
+  if (!version) return null;
+  return { language, version };
+}
+
+// Warm the in-memory cache at server start
+async function warmRuntimeCache() {
+  const baseUrl = process.env.PISTON_BASE_URL || 'https://emkc.org/api/v2/piston';
+  const now = Date.now();
+  try {
+    const resp = await fetch(`${baseUrl}/runtimes`, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(10000) });
+    if (!resp.ok) throw new Error('bad status');
+    const list = await resp.json();
+    runtimeCache = { ts: now, list: Array.isArray(list) ? list : [] };
+    if (runtimeCache.list.length) writeDiskCache(runtimeCache);
+  } catch (e) {
+    // If network fails, try disk; else leave cache empty and rely on FALLBACK_VERSIONS per request
+    const disk = readDiskCache();
+    if (disk.list.length) runtimeCache = disk;
+  }
+}
+
+exports.warmRuntimeCache = warmRuntimeCache;

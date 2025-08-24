@@ -14,6 +14,7 @@ const sessionRoutes = require('./src/routes/session.routes');
 const problemRoutes = require('./src/routes/problem.routes');
 const executeRoutes = require('./src/routes/execute.routes');
 const articleRoutes = require('./src/routes/article.routes');
+const { warmRuntimeCache } = require('./src/controllers/execute.controller');
 
 const { authSocketMiddleware } = require('./src/socket/authSocket');
 const { registerSessionHandlers } = require('./src/socket/sessionSocket');
@@ -106,6 +107,8 @@ app.use((err, req, res, next) => {
 async function start() {
 	const mongoUri = process.env.MONGO_URI || 'mongodb://localhost:27017/interview_app';
 	await mongoose.connect(mongoUri);
+	// Warm Piston runtime cache in background; do not block startup
+	warmRuntimeCache().catch(() => {});
 	server.listen(PORT, () => console.log(`API listening on http://localhost:${PORT}`));
 }
 
