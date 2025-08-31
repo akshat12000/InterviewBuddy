@@ -21,6 +21,7 @@ export default function SessionRoomPage() {
   ])
   const [decision, setDecision] = useState<'selected'|'rejected'|'on-hold'>('on-hold')
   const [submitting, setSubmitting] = useState(false)
+  const [downloading, setDownloading] = useState(false)
 
   // WebRTC state
   const pcRef = useRef<RTCPeerConnection | null>(null)
@@ -314,6 +315,14 @@ export default function SessionRoomPage() {
       setMediaError('Camera/Mic error: ' + msg)
       throw err
     }
+  }
+
+  // Keyboard shortcuts: Ctrl/Cmd+Enter to Run, Shift+Alt+F to Format
+  function onEditorMount(editor: any, monaco: any) {
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => { if (!running && !editingDisabled) runCode() })
+    editor.addCommand(monaco.KeyMod.Shift | monaco.KeyMod.Alt | monaco.KeyCode.KeyF, () => {
+      editor.getAction('editor.action.formatDocument')?.run()
+    })
   }
 
   async function refreshLocalMedia() {
@@ -671,6 +680,27 @@ export default function SessionRoomPage() {
       await axios.patch(`/api/sessions/${sessionId}/problem`, { problem: pid })
     } catch {}
   }
+
+  async function downloadPdf() {
+    if (!sessionId) return
+    try {
+      setDownloading(true)
+      const { data } = await axios.get(`/api/sessions/${sessionId}/export/pdf`, { responseType: 'blob' })
+      const blob = new Blob([data], { type: 'application/pdf' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `session-${sessionId}.pdf`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      alert('Failed to download PDF')
+    } finally {
+      setDownloading(false)
+    }
+  }
   return (
     <>
       {showResultsModal && (
@@ -873,7 +903,7 @@ export default function SessionRoomPage() {
                 <button className="btn" onClick={runCode} disabled={running || editingDisabled} aria-label="Run code"><Play size={16}/> <span className="hidden sm:inline">{running?'Running...':'Run'}</span></button>
               </div>
               <div className="min-h-0">
-                <Editor height="100%" language={language} value={code} onChange={onEdit} options={{ readOnly: editingDisabled }} />
+                <Editor height="100%" language={language} value={code} onChange={onEdit} options={{ readOnly: editingDisabled }} onMount={onEditorMount} />
               </div>
               <div className="overflow-auto rounded-md border border-neutral-800 bg-neutral-950 p-2">
                 <div className="mb-1 font-semibold">Output</div>
@@ -929,7 +959,7 @@ export default function SessionRoomPage() {
               <div className="px-2 pb-2 text-sm text-red-400">{mediaError}</div>
             )}
             <div className="min-h-0">
-              <Editor height="100%" language={language} value={code} onChange={onEdit} options={{ readOnly: editingDisabled }} />
+              <Editor height="100%" language={language} value={code} onChange={onEdit} options={{ readOnly: editingDisabled }} onMount={onEditorMount} />
             </div>
             <div className="overflow-auto border-t border-neutral-800 bg-neutral-950 p-2">
               <div className="mb-1 font-semibold">Output</div>
@@ -974,7 +1004,8 @@ export default function SessionRoomPage() {
           </div>
       {user?.role === 'interviewer' && (
             <div>
-        <button className="btn btn-primary w-full" onClick={() => submitScores()} disabled={submitting}>{submitting?'Submitting...':'Submit Scores'}</button>
+  <button className="btn btn-primary w-full" onClick={() => submitScores()} disabled={submitting}>{submitting?'Submitting...':'Submit Scores'}</button>
+  <button className="btn w-full mt-2" onClick={downloadPdf} disabled={!sessionId || downloading}>{downloading ? 'Downloading…' : 'Download PDF Summary'}</button>
             </div>
           )}
         </div>

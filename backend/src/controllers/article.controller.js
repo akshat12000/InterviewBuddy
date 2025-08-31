@@ -176,6 +176,23 @@ exports.deleteComment = async (req, res, next) => {
   } catch (e) { next(e); }
 };
 
+exports.updateComment = async (req, res, next) => {
+  try {
+    const { id, cid } = req.params;
+    const body = z.object({ content: z.string().min(1) }).parse(req.body || {});
+    const safe = sanitizeHtml(body.content, { allowedTags: [], allowedAttributes: {} });
+    // Only comment author can edit
+    const updated = await Article.findOneAndUpdate(
+      { ...byIdOrSlug(id), 'comments._id': cid, 'comments.author': req.user.uid },
+      { $set: { 'comments.$.content': safe, 'comments.$.updatedAt': new Date() } },
+      { new: true }
+    ).select('comments');
+    if (!updated) return res.status(404).json({ message: 'Comment not found or not authorized' });
+    const c = updated.comments.id(cid);
+    res.json({ item: c });
+  } catch (e) { next(e); }
+};
+
 exports.likeComment = async (req, res, next) => {
   try {
     const { id, cid } = req.params;

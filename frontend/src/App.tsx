@@ -11,6 +11,7 @@ import NotFoundPage from './pages/NotFoundPage'
 import ArticlesPage from './pages/ArticlesPage'
 import ArticleDetailPage from './pages/ArticleDetailPage'
 import ArticleEditPage from './pages/ArticleEditPage'
+import { ToastProvider } from './ui/Toaster'
 
 function ProtectedRoute({ children }: { children: JSX.Element }) {
   const { user, loading } = useAuth()
@@ -63,9 +64,10 @@ export default function App() {
   }
   return (
     <AuthProvider>
-      <BrowserRouter>
-        <Layout>
-          <Routes>
+      <ToastProvider>
+        <BrowserRouter>
+          <Layout>
+            <Routes>
             <Route path="/" element={<HomePage />} />
             <Route path="/login" element={<LoginPage />} />
             <Route path="/signup" element={<SignupPage />} />
@@ -76,9 +78,10 @@ export default function App() {
             <Route path="/articles/:id" element={<ProtectedRoute><ArticleDetailPage /></ProtectedRoute>} />
             <Route path="/room/:roomId" element={<ProtectedRoute><SessionRoomPage /></ProtectedRoute>} />
             <Route path="*" element={<NotFoundPage />} />
-          </Routes>
-        </Layout>
-      </BrowserRouter>
+            </Routes>
+          </Layout>
+        </BrowserRouter>
+      </ToastProvider>
     </AuthProvider>
   )
 }

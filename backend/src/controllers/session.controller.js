@@ -1,6 +1,8 @@
 const { z } = require('zod');
 const Session = require('../models/Session');
+const ScoringTemplate = require('../models/ScoringTemplate');
 const mongoose = require('mongoose');
+const PDFDocument = require('pdfkit');
 
 const createSchema = z.object({
   interviewer: z.string(),
@@ -13,11 +15,23 @@ exports.createSession = async (req, res, next) => {
   try {
     const data = createSchema.parse(req.body);
     const roomId = new Date().getTime().toString(36) + Math.random().toString(36).slice(2,8)
+    // attach default scoring template if exists
+    let tmpl = await ScoringTemplate.findOne({ isDefault: true });
+    if (!tmpl) {
+      // minimal default
+      tmpl = { name: 'Default', criteria: [
+        { key: 'problem_solving', label: 'Problem Solving', weight: 0.4, maxScore: 10 },
+        { key: 'code_quality', label: 'Code Quality', weight: 0.3, maxScore: 10 },
+        { key: 'communication', label: 'Communication', weight: 0.2, maxScore: 10 },
+        { key: 'culture_fit', label: 'Culture Fit', weight: 0.1, maxScore: 10 },
+      ]};
+    }
     const created = await Session.create({
       interviewer: data.interviewer,
       candidate: data.candidate,
       problem: data.problem,
       status: 'scheduled',
+      scoringTemplate: { name: tmpl.name, criteria: tmpl.criteria },
       roomId,
     });
     res.status(201).json({ item: created });
@@ -157,6 +171,119 @@ exports.listMySessions = async (req, res, next) => {
       .sort({ createdAt: -1 })
       .populate('interviewer candidate problem');
     res.json({ items });
+  } catch (e) {
+    next(e);
+  }
+};
+
+// Scoring templates
+exports.getDefaultScoringTemplate = async (req, res, next) => {
+  try {
+    const tmpl = await ScoringTemplate.findOne({ isDefault: true });
+    if (!tmpl) {
+      return res.json({
+        template: {
+          name: 'Default',
+          criteria: [
+            { key: 'problem_solving', label: 'Problem Solving', weight: 0.4, maxScore: 10 },
+            { key: 'code_quality', label: 'Code Quality', weight: 0.3, maxScore: 10 },
+            { key: 'communication', label: 'Communication', weight: 0.2, maxScore: 10 },
+            { key: 'culture_fit', label: 'Culture Fit', weight: 0.1, maxScore: 10 },
+          ]
+        }
+      });
+    }
+    res.json({ template: { name: tmpl.name, criteria: tmpl.criteria } });
+  } catch (e) { next(e); }
+};
+
+const setTemplateSchema = z.object({
+  name: z.string().min(1),
+  criteria: z.array(z.object({
+    key: z.string().min(1),
+    label: z.string().min(1),
+    weight: z.number().min(0).max(1),
+    maxScore: z.number().min(1).max(100).default(10)
+  })).min(1)
+});
+
+exports.setDefaultScoringTemplate = async (req, res, next) => {
+  try {
+    const data = setTemplateSchema.parse(req.body);
+    // Normalize weights to sum ~1 if they don't
+    const total = data.criteria.reduce((a, c) => a + c.weight, 0) || 1;
+    const normalized = data.criteria.map(c => ({ ...c, weight: +(c.weight / total).toFixed(4) }));
+    const doc = await ScoringTemplate.findOneAndUpdate(
+      { isDefault: true },
+      { name: data.name, criteria: normalized, isDefault: true },
+      { upsert: true, new: true }
+    );
+    res.json({ template: { name: doc.name, criteria: doc.criteria } });
+  } catch (e) { next(e); }
+};
+
+// Export PDF summary for a session
+exports.exportSessionPdf = async (req, res, next) => {
+  try {
+    const id = req.params.id;
+    const s = await Session.findById(id).populate('interviewer candidate problem');
+    if (!s) return res.status(404).json({ message: 'Not found' });
+    // Only interviewer or candidate can export
+    const isParticipant = [s.interviewer?.id?.toString(), s.candidate?.id?.toString()].includes(req.user.uid);
+    if (!isParticipant) return res.status(403).json({ message: 'Forbidden' });
+
+    const doc = new PDFDocument({ size: 'A4', margin: 50 });
+    res.setHeader('content-type', 'application/pdf');
+    res.setHeader('content-disposition', `attachment; filename="session-${s.id}.pdf"`);
+    doc.pipe(res);
+
+    // Header
+    doc.fontSize(18).text('Interview Summary', { align: 'center' }).moveDown(0.5);
+    doc.fontSize(11).text(`Session ID: ${s.id}`);
+    doc.text(`Interviewer: ${s.interviewer?.name || s.interviewer}`);
+    doc.text(`Candidate: ${s.candidate?.name || s.candidate}`);
+    doc.text(`Problem: ${s.problem?.title || s.problem}`);
+    doc.text(`Status: ${s.status}`);
+    if (s.startedAt) doc.text(`Started: ${new Date(s.startedAt).toLocaleString()}`);
+    if (s.endedAt) doc.text(`Ended: ${new Date(s.endedAt).toLocaleString()}`);
+    doc.moveDown();
+
+    // Scores table
+    const criteria = (s.scoringTemplate?.criteria || []).filter(c =>
+      String(c.key).toLowerCase() !== 'culture_fit' && String(c.label).toLowerCase() !== 'culture fit'
+    );
+    const scores = s.interviewerScores || [];
+    const scoreMap = new Map(scores.map(x => [x.criterion, x]));
+    let weightedTotal = 0, totalWeight = 0;
+    doc.fontSize(13).text('Scores');
+    doc.moveDown(0.5);
+    doc.fontSize(11);
+    criteria.forEach(c => {
+      const sc = scoreMap.get(c.key) || scoreMap.get(c.label) || { score: 0, notes: '' };
+      const weight = typeof c.weight === 'number' ? c.weight : 0;
+      const maxScore = c.maxScore || 10;
+      const normalizedScore = Math.max(0, Math.min(maxScore, sc.score || 0)) / maxScore;
+      weightedTotal += normalizedScore * weight;
+      totalWeight += weight;
+      doc.text(`• ${c.label} (${Math.round(weight*100)}%): ${sc.score ?? '-'} / ${maxScore}`);
+      if (sc.notes) doc.text(`  Notes: ${sc.notes}`);
+    });
+    // If no template, compute simple average
+    let finalScore = 0;
+    if (totalWeight > 0) finalScore = +(weightedTotal / totalWeight * 10).toFixed(2);
+    else if (scores.length) finalScore = +(scores.reduce((a,it)=>a+(it.score||0),0)/scores.length).toFixed(2);
+    doc.moveDown();
+    doc.fontSize(12).text(`Final Score: ${finalScore}/10`);
+
+    // Decision and notes
+    if (s.finalDecision) doc.text(`Decision: ${s.finalDecision}`);
+    if (s.notes) {
+      doc.moveDown(0.5);
+      doc.fontSize(12).text('Final Notes:');
+      doc.fontSize(11).text(s.notes);
+    }
+
+    doc.end();
   } catch (e) {
     next(e);
   }

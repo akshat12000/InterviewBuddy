@@ -9,6 +9,24 @@ const scoreSchema = new Schema(
   { _id: false }
 );
 
+const criterionTemplateSchema = new Schema(
+  {
+    key: String,
+    label: String,
+    weight: Number, // 0..1
+    maxScore: { type: Number, default: 10 },
+  },
+  { _id: false }
+);
+
+const scoringTemplateSchema = new Schema(
+  {
+    name: { type: String, default: 'Default' },
+    criteria: [criterionTemplateSchema],
+  },
+  { _id: false }
+);
+
 const sessionSchema = new Schema(
   {
     interviewer: { type: Schema.Types.ObjectId, ref: 'User', required: true },
@@ -25,6 +43,7 @@ const sessionSchema = new Schema(
       }
     ],
     interviewerScores: [scoreSchema],
+  scoringTemplate: scoringTemplateSchema,
     finalDecision: { type: String, enum: ['selected', 'rejected', 'on-hold'] },
     notes: String,
     roomId: { type: String, index: true }

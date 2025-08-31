@@ -21,6 +21,7 @@ router.post('/:id/undislike', auth, ctrl.undislikeArticle);
 
 // comments
 router.post('/:id/comments', auth, ctrl.addComment);
+router.put('/:id/comments/:cid', auth, ctrl.updateComment);
 router.delete('/:id/comments/:cid', auth, ctrl.deleteComment);
 router.post('/:id/comments/:cid/like', auth, ctrl.likeComment);
 router.post('/:id/comments/:cid/unlike', auth, ctrl.unlikeComment);

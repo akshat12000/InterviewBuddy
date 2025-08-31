@@ -45,7 +45,20 @@ export default function ArticlesPage() {
         </select>
         <Link to="/articles/new" className="btn btn-primary">Write</Link>
       </div>
-      {loading ? <div>Loading...</div> : (
+      {loading ? (
+        <div className="grid gap-3 animate-pulse">
+          {Array.from({ length: 5 }).map((_,i)=>(
+            <div key={i} className="rounded border border-neutral-800 bg-neutral-900 p-3">
+              <div className="h-5 w-1/2 rounded bg-neutral-800" />
+              <div className="mt-2 h-3 w-1/3 rounded bg-neutral-800" />
+              <div className="mt-3 space-y-2">
+                <div className="h-3 rounded bg-neutral-800" />
+                <div className="h-3 rounded bg-neutral-800" />
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
         <div className="grid gap-3">
           {items.map(it => {
             const authorId: any = (it as any).author?._id || (it as any).author?.id || (it as any).author
